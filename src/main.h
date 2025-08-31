@@ -25,6 +25,7 @@
 #include "tokenizer.h"
 #include "modelio.h"
 #include "sampler.h"
+#include "GLContext.h"
 #include "SemanticCoherence.h"
 #include "ContextWindow.h"
 #include "Transformer/Transformer.h"
@@ -35,11 +36,18 @@ template<typename T>
 static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v)); }
 
 
-static void TrainModel(std::string& trainingFilename, std::string& modelFilename,
-                       LauguageModel& model, Vocabulary& vocab,
-                       int layerWidth, int headCount, int feedWidth, int layerDepth,
-                       int contextSize, float learningRate, float learningRateMin, 
-                       float learningRateDecay, float& avgLoss, float lossDropout);
+static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
+                          LauguageModel& model, Vocabulary& vocab,
+                          int layerWidth, int headCount, int feedWidth, int layerDepth,
+                          int contextSize, float learningRate, float learningRateMin, 
+                          float learningRateDecay, float& avgLoss, float lossDropout);
+
+static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
+                          LauguageModel& model, Vocabulary& vocab,
+                          int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
+                          float learningRate, float learningRateMin, float learningRateDecay, 
+                          float& avgLoss, float lossDropout,
+                          ShaderTensor& gpu);
 
 NeuralNetwork trainer(0.001f);
 

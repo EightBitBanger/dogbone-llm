@@ -9,6 +9,7 @@
 #include "LauguageModel.h"
 #include "AdamOptimization.h"
 #include "GradientAccumulator.h"
+#include "ShaderTensor.h"
 
 class NeuralNetwork {
 public:
@@ -17,6 +18,8 @@ public:
     
     // Adam states for top/bottom parameters
     AdamState tokW_s, posP_s, lmW_s, lmb_s;
+    
+    bool g_matmul_built = false;
     
     // Per-layer states
     struct BlockStates {
@@ -51,8 +54,22 @@ public:
     float Step(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
                int pad_id, GradientAccumulator* acc = NULL, bool apply_updates = true);
     
+    // Runs one training step using GPU-accelerated forwards where available.
+    // Falls back to CPU internally if the GPU path is unavailable.
+    float StepGPU(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, int pad_id, GradientAccumulator* acc, bool apply_updates);
+    
     // Apply Accumulated Gradients In A Single Adam Step (Optional Scaling).
     void ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale = 1.0f);
+    
+    // Build required shaders.
+    void BuildShaders();
+    
+    // Attach a ShaderTensor for optional GPU acceleration (pass nullptr to disable).
+    void UseGPU(ShaderTensor* st);
+    
+private:
+    
+    ShaderTensor* mGpu = nullptr;
 };
 
 #endif

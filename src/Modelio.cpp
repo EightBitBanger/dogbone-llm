@@ -219,13 +219,13 @@ bool SaveModelPackage(const std::string& path,
     std::vector<ModelPkgSection> entries(section_count);
 
     // ---- 1) VOCB first (put strings near the top) ----
-    std::strncpy(entries[0].id, "VOCB", 5);
+    std::strncpy(entries[0].id, "VOCB", 4);
     entries[0].offset = (uint64_t)out.tellp();
     if (!SaveVocabBinaryToStream(vocab, out)) return false;
     entries[0].size = (uint64_t)((uint64_t)out.tellp() - entries[0].offset);
 
     // ---- 2) HPRM (small header summary) ----
-    std::strncpy(entries[1].id, "HPRM", 5);
+    std::strncpy(entries[1].id, "HPRM", 4);
     entries[1].offset = (uint64_t)out.tellp();
     {
         ModelDims dims;
@@ -240,19 +240,19 @@ bool SaveModelPackage(const std::string& path,
     entries[1].size = (uint64_t)((uint64_t)out.tellp() - entries[1].offset);
 
     // ---- 3) MODEL (weights) ----
-    std::strncpy(entries[2].id, "MODEL", 6);
+    std::strncpy(entries[2].id, "MODE", 4);
     entries[2].offset = (uint64_t)out.tellp();
     if (!model.SaveToStream(out)) return false;
     entries[2].size = (uint64_t)((uint64_t)out.tellp() - entries[2].offset);
 
     // ---- 4) OPTS (optimizer state) ----
-    std::strncpy(entries[3].id, "OPTS", 5);
+    std::strncpy(entries[3].id, "OPTS", 4);
     entries[3].offset = (uint64_t)out.tellp();
     {
         const uint32_t opt_version = 1u;
         if (!StreamWriteLE32(out, opt_version)) return false;
-
-        // Adam hyperparams + step + epoch
+    
+        // Adam hyperparams + step + epoch + avg loss
         out.write((const char*)&trainer.opt.lr,    sizeof(float));
         out.write((const char*)&trainer.opt.beta1, sizeof(float));
         out.write((const char*)&trainer.opt.beta2, sizeof(float));
@@ -261,42 +261,49 @@ bool SaveModelPackage(const std::string& path,
         out.write((const char*)&t_i32, sizeof(int32_t));
         out.write((const char*)&epoch, sizeof(uint64_t));
         out.write((const char*)&last_avg_loss, sizeof(float));
-        
-        // Ensure moment vectors sized; then write them
-        EnsureAdamSize(const_cast<AdamState&>(trainer.lmW_s),  model.lm_head.W.data.size());
-        EnsureAdamSize(const_cast<AdamState&>(trainer.lmb_s),  model.lm_head.b.size());
-        EnsureAdamSize(const_cast<AdamState&>(trainer.posP_s), model.pos.P.data.size());
-        EnsureAdamSize(const_cast<AdamState&>(trainer.tokW_s), model.tok.W.data.size());
-
-        if (!WriteAdamState(out, trainer.lmW_s,  model.lm_head.W.data.size())) return false;
-        if (!WriteAdamState(out, trainer.lmb_s,  model.lm_head.b.size()))       return false;
-        if (!WriteAdamState(out, trainer.posP_s, model.pos.P.data.size()))      return false;
-        if (!WriteAdamState(out, trainer.tokW_s, model.tok.W.data.size()))      return false;
-
-        // Per-layer states
-        size_t L = (size_t)model.n_layers;
-        const std::vector<NeuralNetwork::BlockStates>& LS = trainer.layer_states;
+    
+        // ---- top-level moments (write from local copies; do not const_cast) ----
+        AdamState lmW  = trainer.lmW_s;
+        AdamState lmb  = trainer.lmb_s;
+        AdamState posP = trainer.posP_s;
+        AdamState tokW = trainer.tokW_s;
+    
+        EnsureAdamSize(lmW,  model.lm_head.W.data.size());
+        EnsureAdamSize(lmb,  model.lm_head.b.size());
+        EnsureAdamSize(posP, model.pos.P.data.size());
+        EnsureAdamSize(tokW, model.tok.W.data.size());
+    
+        if (!WriteAdamState(out, lmW,  model.lm_head.W.data.size())) return false;
+        if (!WriteAdamState(out, lmb,  model.lm_head.b.size()))       return false;
+        if (!WriteAdamState(out, posP, model.pos.P.data.size()))      return false;
+        if (!WriteAdamState(out, tokW, model.tok.W.data.size()))      return false;
+    
+        // ---- per-layer moments (work on a local vector that we size safely) ----
+        const size_t L = (size_t)model.n_layers;
+        auto LS = trainer.layer_states;           // local copy
+        if (LS.size() < L) LS.resize(L);          // ensure indexing is safe
+    
         for (size_t l = 0; l < L; ++l) {
             const TransformerBlock& B = model.layers[l];
-            const NeuralNetwork::BlockStates& S = LS[l];
-
-            EnsureAdamSize(const_cast<AdamState&>(S.WoW_s),  B.attn.Wo.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.Wob_s),  B.attn.Wo.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.WqW_s),  B.attn.Wq.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.Wqb_s),  B.attn.Wq.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.WkW_s),  B.attn.Wk.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.Wkb_s),  B.attn.Wk.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.WvW_s),  B.attn.Wv.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.Wvb_s),  B.attn.Wv.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.fc1W_s), B.ffn.fc1.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.fc1b_s), B.ffn.fc1.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.fc2W_s), B.ffn.fc2.W.data.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.fc2b_s), B.ffn.fc2.b.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.ln1g_s), B.ln1.gamma.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.ln1b_s), B.ln1.beta.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.ln2g_s), B.ln2.gamma.size());
-            EnsureAdamSize(const_cast<AdamState&>(S.ln2b_s), B.ln2.beta.size());
-
+            auto &S = LS[l];                      // local/mutable
+    
+            EnsureAdamSize(S.WoW_s,  B.attn.Wo.W.data.size());
+            EnsureAdamSize(S.Wob_s,  B.attn.Wo.b.size());
+            EnsureAdamSize(S.WqW_s,  B.attn.Wq.W.data.size());
+            EnsureAdamSize(S.Wqb_s,  B.attn.Wq.b.size());
+            EnsureAdamSize(S.WkW_s,  B.attn.Wk.W.data.size());
+            EnsureAdamSize(S.Wkb_s,  B.attn.Wk.b.size());
+            EnsureAdamSize(S.WvW_s,  B.attn.Wv.W.data.size());
+            EnsureAdamSize(S.Wvb_s,  B.attn.Wv.b.size());
+            EnsureAdamSize(S.fc1W_s, B.ffn.fc1.W.data.size());
+            EnsureAdamSize(S.fc1b_s, B.ffn.fc1.b.size());
+            EnsureAdamSize(S.fc2W_s, B.ffn.fc2.W.data.size());
+            EnsureAdamSize(S.fc2b_s, B.ffn.fc2.b.size());
+            EnsureAdamSize(S.ln1g_s, B.ln1.gamma.size());
+            EnsureAdamSize(S.ln1b_s, B.ln1.beta.size());
+            EnsureAdamSize(S.ln2g_s, B.ln2.gamma.size());
+            EnsureAdamSize(S.ln2b_s, B.ln2.beta.size());
+    
             if (!WriteAdamState(out, S.WoW_s,  B.attn.Wo.W.data.size())) return false;
             if (!WriteAdamState(out, S.Wob_s,  B.attn.Wo.b.size()))       return false;
             if (!WriteAdamState(out, S.WqW_s,  B.attn.Wq.W.data.size()))  return false;

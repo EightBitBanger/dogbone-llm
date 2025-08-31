@@ -1,5 +1,51 @@
 #include "NeuralNetwork.h"
 #include "CrossEntropyLoss.h"
+#include <cstring>
+#include "ShaderTensor.h"
+
+// === GPU linear forward via ShaderTensor (X [T x IN] * W [IN x OUT] + b [OUT]) ===
+static bool gpu_linear_forward(ShaderTensor* gpu, const Tensor2D& X, const LinearLayer& lin, Tensor2D& Y) {
+    const int T = X.R, IN = X.C, OUT = lin.W.C;
+    if (lin.W.R != IN || (int)lin.b.size() != OUT) return false;
+    
+    // buffers
+    std::ptrdiff_t bytesX = (std::ptrdiff_t)T * IN * sizeof(float);
+    std::ptrdiff_t bytesW = (std::ptrdiff_t)IN * OUT * sizeof(float);
+    std::ptrdiff_t bytesB = (std::ptrdiff_t)OUT * sizeof(float);
+    std::ptrdiff_t bytesY = (std::ptrdiff_t)T * OUT * sizeof(float);
+    int meta[3] = { T, IN, OUT };
+    
+    // correct order: (name, sizeBytes, bindingIndex)
+    gpu->ensureSSBO("X",   bytesX, 0);
+    gpu->ensureSSBO("W",   bytesW, 1);
+    gpu->ensureSSBO("B",   bytesB, 2);
+    gpu->ensureSSBO("Y",   bytesY, 3);
+    gpu->ensureSSBO("Meta", (std::ptrdiff_t)sizeof(meta), 4);
+    
+    gpu->upload("X", X.data.data(), bytesX);
+    gpu->upload("W", lin.W.data.data(), bytesW);
+    gpu->upload("B", lin.b.data(), bytesB);
+    gpu->upload("Meta", meta, (std::ptrdiff_t)sizeof(meta));
+
+    // Dispatch
+    unsigned gx = (unsigned)((OUT + 15) / 16);
+    unsigned gy = (unsigned)((T   + 15) / 16);
+    gpu->use();
+    gpu->dispatch(gx, gy, 1);
+    gpu->sync(); // ensure completion
+
+    // Readback
+    std::vector<float> hostY((size_t)T * (size_t)OUT);
+    gpu->downloadSync("Y", hostY.data(), bytesY);
+
+    Y = Tensor2D(T, OUT);
+    for (int r = 0; r < T; ++r) {
+        float* yr = Y.Row(r);
+        std::memcpy(yr, hostY.data() + (size_t)r * OUT, (size_t)OUT * sizeof(float));
+    }
+    return true;
+}
+
 
 void NeuralNetwork::InitScratch(int max_T) {
     attnScratch_p.resize((size_t)max_T);
@@ -455,6 +501,363 @@ float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, 
     return loss;
 }
 
+float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets,
+                             int pad_id, GradientAccumulator* acc, bool apply_updates) {
+    // If no GPU is attached, just run the CPU path.
+    if (!mGpu) return Step(model, inputs, targets, pad_id, acc, apply_updates);
+
+    if (apply_updates) {
+        if ((int)layer_states.size() != model.n_layers) layer_states.resize((size_t)model.n_layers);
+    }
+
+    // ---------- forward with caches (GPU-accelerated linears) ----------
+    Tensor2D x0 = model.tok.Forward(inputs); // [T, d_model]  (emb lookup remains on CPU)
+    model.pos.AddInPlace(x0);
+
+    struct Cache {
+        Tensor2D x_in;
+        Tensor2D n1;
+        Tensor2D Q, K, V;
+        Tensor2D attn_concat; // before Wo
+        Tensor2D attn_out;    // after Wo (to be added residually)
+        Tensor2D x_attn_res;  // x after attention residual
+        Tensor2D n2;
+        Tensor2D ff1_out;
+        Tensor2D ff1_act;
+        Tensor2D ff2_out;
+    };
+    std::vector<Cache> caches((size_t)model.n_layers);
+
+    // prefer GPU for linears; fallback to CPU if the kernel declines
+    auto LforwardGPU = [&](const LinearLayer& L, const Tensor2D& Xin) -> Tensor2D {
+        Tensor2D Y;
+        if (gpu_linear_forward(mGpu, Xin, L, Y)) {
+            return Y;
+        }
+        return L.Forward(Xin);
+    };
+
+    Tensor2D x = x0;
+    for (int l = 0; l < model.n_layers; l++) {
+        const TransformerBlock& B = model.layers[(size_t)l];
+        Cache& C = caches[(size_t)l];
+
+        C.x_in = x;
+        C.n1 = B.ln1.Forward(C.x_in); // pre-norm
+
+        // attention projections on GPU when possible
+        C.Q = LforwardGPU(B.attn.Wq, C.n1);
+        C.K = LforwardGPU(B.attn.Wk, C.n1);
+        C.V = LforwardGPU(B.attn.Wv, C.n1);
+
+        // causal attention on CPU (loop)  safe and deterministic for now
+        C.attn_concat = Tensor2D(C.n1.R, model.d_model);
+        C.attn_concat.Zero();
+        float scale = 1.0f / std::sqrt((float)B.attn.d_head);
+
+        for (int h = 0; h < B.attn.n_heads; h++) {
+            int off = h * B.attn.d_head;
+            for (int t = 0; t < C.n1.R; t++) {
+                float maxlogit = -std::numeric_limits<float>::infinity();
+                for (int u = 0; u <= t; u++) {
+                    float dot = 0.0f;
+                    const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                    const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                    float logit = dot * scale;
+                    if (logit > maxlogit) maxlogit = logit;
+                }
+                float denom = 0.0f;
+                std::vector<float> w((size_t)t + 1, 0.0f);
+                for (int u = 0; u <= t; u++) {
+                    float dot = 0.0f;
+                    const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                    const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                    float logit = dot * scale;
+                    float e = std::exp(logit - maxlogit);
+                    w[(size_t)u] = e;
+                    denom += e;
+                }
+                float invden = 1.0f / denom;
+                float* out_row = C.attn_concat.Row(t);
+                for (int u = 0; u <= t; u++) {
+                    float ww = w[(size_t)u] * invden;
+                    const float* v = &C.V.data[(size_t)u * C.V.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) {
+                        out_row[off + c] += ww * v[c];
+                    }
+                }
+            }
+        }
+
+        // Wo on GPU, then residual
+        C.attn_out     = LforwardGPU(B.attn.Wo, C.attn_concat);
+        C.x_attn_res   = C.x_in;
+        AddInPlace(C.x_attn_res, C.attn_out);
+
+        // mlp (fc1/act/fc2); fc1/fc2 try GPU
+        C.n2      = B.ln2.Forward(C.x_attn_res);
+        C.ff1_out = LforwardGPU(B.ffn.fc1, C.n2);
+        C.ff1_act = Activation.Forward(C.ff1_out);
+        C.ff2_out = LforwardGPU(B.ffn.fc2, C.ff1_act);
+
+        x = C.x_attn_res;
+        AddInPlace(x, C.ff2_out);
+    }
+
+    // lm head on GPU if possible
+    Tensor2D logits;
+    {
+        Tensor2D tmp;
+        if (gpu_linear_forward(mGpu, x, model.lm_head, tmp)) {
+            logits = std::move(tmp);
+        } else {
+            logits = model.lm_head.Forward(x);
+        }
+    }
+
+    // ensure GPU writes are visible before CPU consumes results (conservative)
+    mGpu->sync();
+
+    float loss = CrossEntropyLoss(logits, targets, pad_id);
+
+    // ---------- backward (CPU) ----------
+    int T = logits.R;
+    int V = logits.C;
+
+    Tensor2D dlogits(T, V);
+    for (int t = 0; t < T; t++) {
+        int y = targets[(size_t)t];
+        if (y == pad_id) {
+            std::fill(dlogits.Row(t), dlogits.Row(t) + V, 0.0f);
+            continue;
+        }
+        const float* row = logits.Row(t);
+        float maxv = -std::numeric_limits<float>::infinity();
+        for (int v = 0; v < V; v++) if (row[v] > maxv) maxv = row[v];
+        float denom = 0.0f;
+        for (int v = 0; v < V; v++) denom += std::exp(row[v] - maxv);
+        float invden = 1.0f / denom;
+        float* dlr = dlogits.Row(t);
+        for (int v = 0; v < V; v++) {
+            float p = std::exp(row[v] - maxv) * invden;
+            dlr[v] = p - ((v == y) ? 1.0f : 0.0f);
+        }
+    }
+    int count = 0;
+    for (int t = 0; t < T; t++) if (targets[(size_t)t] != pad_id) count++;
+    if (count > 0) {
+        float inv = 1.0f / (float)count;
+        for (size_t i = 0; i < dlogits.data.size(); i++) dlogits.data[i] *= inv;
+    }
+
+    Tensor2D dW_lm, dx_last;
+    std::vector<float> db_lm;
+    LinearBackward(x, model.lm_head, dlogits, dW_lm, db_lm, dx_last);
+
+    Tensor2D dx = dx_last;
+
+    Tensor2D d_tokW(model.tok.W.R, model.tok.W.C); std::fill(d_tokW.data.begin(), d_tokW.data.end(), 0.0f);
+    Tensor2D d_posP(model.pos.P.R, model.pos.P.C); std::fill(d_posP.data.begin(), d_posP.data.end(), 0.0f);
+
+    for (int l = model.n_layers - 1; l >= 0; l--) {
+        TransformerBlock& B = model.layers[(size_t)l];
+        Cache& C = caches[(size_t)l];
+
+        Tensor2D d_ff2_out = dx;
+        Tensor2D d_x_attn_res = dx;
+
+        Tensor2D dW_fc2, dx_fc2;
+        std::vector<float> db_fc2;
+        LinearBackward(C.ff1_act, B.ffn.fc2, d_ff2_out, dW_fc2, db_fc2, dx_fc2);
+
+        Tensor2D d_ff1_out;
+        Activation.Backward(C.ff1_out, dx_fc2, d_ff1_out);
+
+        Tensor2D dW_fc1, dx_fc1;
+        std::vector<float> db_fc1;
+        LinearBackward(C.n2, B.ffn.fc1, d_ff1_out, dW_fc1, db_fc1, dx_fc1);
+
+        Tensor2D d_n2 = dx_fc1;
+
+        std::vector<float> dgamma2, dbeta2;
+        Tensor2D d_x_attn_res_from_ln2;
+        LayerNormBackward(C.x_attn_res, B.ln2, d_n2, dgamma2, dbeta2, d_x_attn_res_from_ln2);
+
+        for (size_t i = 0; i < d_x_attn_res.data.size(); i++) d_x_attn_res.data[i] += d_x_attn_res_from_ln2.data[i];
+
+        Tensor2D d_attn_out = d_x_attn_res;
+        Tensor2D d_x_in_after_attn = d_x_attn_res;
+
+        Tensor2D dWo, dx_attn_concat;
+        std::vector<float> dbo;
+        LinearBackward(C.attn_concat, B.attn.Wo, d_attn_out, dWo, dbo, dx_attn_concat);
+
+        Tensor2D dQ(C.Q.R, C.Q.C); std::fill(dQ.data.begin(), dQ.data.end(), 0.0f);
+        Tensor2D dK(C.K.R, C.K.C); std::fill(dK.data.begin(), dK.data.end(), 0.0f);
+        Tensor2D dV(C.V.R, C.V.C); std::fill(dV.data.begin(), dV.data.end(), 0.0f);
+
+        float scale = 1.0f / std::sqrt((float)B.attn.d_head);
+        for (int h = 0; h < B.attn.n_heads; h++) {
+            int off = h * B.attn.d_head;
+            for (int t = 0; t < C.n1.R; t++) {
+                float maxlogit = -std::numeric_limits<float>::infinity();
+                for (int u = 0; u <= t; u++) {
+                    float dot = 0.0f;
+                    const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                    const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                    float logit = dot * scale;
+                    if (logit > maxlogit) maxlogit = logit;
+                }
+                float denom = 0.0f;
+                std::vector<float> p((size_t)t + 1, 0.0f);
+                for (int u = 0; u <= t; u++) {
+                    float dot = 0.0f;
+                    const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                    const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                    float logit = dot * scale;
+                    float e = std::exp(logit - maxlogit);
+                    p[(size_t)u] = e;
+                    denom += e;
+                }
+                float invden = 1.0f / denom;
+                for (int u = 0; u <= t; u++) p[(size_t)u] *= invden;
+
+                const float* gout = &dx_attn_concat.data[(size_t)t * dx_attn_concat.C + off];
+
+                for (int u = 0; u <= t; u++) {
+                    float w = p[(size_t)u];
+                    float* dVrow = &dV.data[(size_t)u * dV.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dVrow[c] += w * gout[c];
+                }
+
+                std::vector<float> g_s((size_t)t + 1, 0.0f);
+                for (int u = 0; u <= t; u++) {
+                    const float* vrow = &C.V.data[(size_t)u * C.V.C + off];
+                    float s = 0.0f;
+                    for (int c = 0; c < B.attn.d_head; c++) s += gout[c] * vrow[c];
+                    g_s[(size_t)u] = s;
+                }
+                float sum_ps = 0.0f;
+                for (int u = 0; u <= t; u++) sum_ps += p[(size_t)u] * g_s[(size_t)u];
+
+                for (int u = 0; u <= t; u++) {
+                    float gz = p[(size_t)u] * (g_s[(size_t)u] - sum_ps);
+                    float* dQt = &dQ.data[(size_t)t * dQ.C + off];
+                    const float* Ku = &C.K.data[(size_t)u * C.K.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dQt[c] += scale * gz * Ku[c];
+
+                    float* dKu = &dK.data[(size_t)u * dK.C + off];
+                    const float* Qt = &C.Q.data[(size_t)t * C.Q.C + off];
+                    for (int c = 0; c < B.attn.d_head; c++) dKu[c] += scale * gz * Qt[c];
+                }
+            }
+        }
+
+        Tensor2D dWq, dWk, dWv, dx_q, dx_k, dx_v;
+        std::vector<float> dbq, dbk, dbv;
+        LinearBackward(C.n1, B.attn.Wq, dQ, dWq, dbq, dx_q);
+        LinearBackward(C.n1, B.attn.Wk, dK, dWk, dbk, dx_k);
+        LinearBackward(C.n1, B.attn.Wv, dV, dWv, dbv, dx_v);
+
+        Tensor2D d_n1(dx_q.R, dx_q.C);
+        for (int i = 0; i < d_n1.R * d_n1.C; i++) {
+            d_n1.data[(size_t)i] = dx_q.data[(size_t)i] + dx_k.data[(size_t)i] + dx_v.data[(size_t)i];
+        }
+
+        std::vector<float> dgamma1, dbeta1;
+        Tensor2D dx_ln1;
+        LayerNormBackward(C.x_in, B.ln1, d_n1, dgamma1, dbeta1, dx_ln1);
+
+        Tensor2D dx_next = d_x_in_after_attn;
+        for (int i = 0; i < dx_next.R * dx_next.C; i++) dx_next.data[(size_t)i] += dx_ln1.data[(size_t)i];
+
+        if (acc) {
+            GradientAccumulator::BlockGrads& GG = acc->layers[(size_t)l];
+            for (size_t i=0;i<GG.dWo.data.size();++i) GG.dWo.data[i] += dWo.data[i];
+            for (size_t i=0;i<GG.dbo.size();++i)      GG.dbo[i]      += dbo[i];
+
+            for (size_t i=0;i<GG.dWq.data.size();++i) GG.dWq.data[i] += dWq.data[i];
+            for (size_t i=0;i<GG.dbq.size();++i)      GG.dbq[i]      += dbq[i];
+            for (size_t i=0;i<GG.dWk.data.size();++i) GG.dWk.data[i] += dWk.data[i];
+            for (size_t i=0;i<GG.dbk.size();++i)      GG.dbk[i]      += dbk[i];
+            for (size_t i=0;i<GG.dWv.data.size();++i) GG.dWv.data[i] += dWv.data[i];
+            for (size_t i=0;i<GG.dbv.size();++i)      GG.dbv[i]      += dbv[i];
+
+            for (size_t i=0;i<GG.d_fc1W.data.size();++i) GG.d_fc1W.data[i] += dW_fc1.data[i];
+            for (size_t i=0;i<GG.d_fc1b.size();++i)      GG.d_fc1b[i]      += db_fc1[i];
+            for (size_t i=0;i<GG.d_fc2W.data.size();++i) GG.d_fc2W.data[i] += dW_fc2.data[i];
+            for (size_t i=0;i<GG.d_fc2b.size();++i)      GG.d_fc2b[i]      += db_fc2[i];
+
+            for (size_t i=0;i<GG.d_ln1g.size();++i) GG.d_ln1g[i] += dgamma1[i];
+            for (size_t i=0;i<GG.d_ln1b.size();++i) GG.d_ln1b[i] += dbeta1[i];
+            for (size_t i=0;i<GG.d_ln2g.size();++i) GG.d_ln2g[i] += dgamma2[i];
+            for (size_t i=0;i<GG.d_ln2b.size();++i) GG.d_ln2b[i] += dbeta2[i];
+        }
+
+        if (apply_updates) {
+            opt.t += 1;
+
+            Adam::StepInPlace(B.attn.Wo.W.data, dWo.data, layer_states[(size_t)l].WoW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wo.b, dbo, layer_states[(size_t)l].Wob_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+
+            Adam::StepInPlace(B.attn.Wq.W.data, dWq.data, layer_states[(size_t)l].WqW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wq.b, dbq, layer_states[(size_t)l].Wqb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wk.W.data, dWk.data, layer_states[(size_t)l].WkW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wk.b, dbk, layer_states[(size_t)l].Wkb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wv.W.data, dWv.data, layer_states[(size_t)l].WvW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.attn.Wv.b, dbv, layer_states[(size_t)l].Wvb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+
+            Adam::StepInPlace(B.ffn.fc1.W.data, dW_fc1.data, layer_states[(size_t)l].fc1W_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ffn.fc1.b, db_fc1, layer_states[(size_t)l].fc1b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ffn.fc2.W.data, dW_fc2.data, layer_states[(size_t)l].fc2W_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ffn.fc2.b, db_fc2, layer_states[(size_t)l].fc2b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+
+            Adam::StepInPlace(B.ln1.gamma, dgamma1, layer_states[(size_t)l].ln1g_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ln1.beta,  dbeta1, layer_states[(size_t)l].ln1b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ln2.gamma, dgamma2, layer_states[(size_t)l].ln2g_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+            Adam::StepInPlace(B.ln2.beta,  dbeta2, layer_states[(size_t)l].ln2b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        }
+
+        dx = dx_next;
+    }
+
+    // embeddings & positional
+    int limit = (x0.R <= model.pos.P.R) ? x0.R : model.pos.P.R;
+    for (int t = 0; t < limit; t++) {
+        float* dprow = &d_posP.data[(size_t)t * d_posP.C];
+        const float* dxrow = dx.Row(t);
+        for (int c = 0; c < d_posP.C; c++) dprow[c] += dxrow[c];
+    }
+    for (int t = 0; t < (int)inputs.size(); t++) {
+        int id = inputs[(size_t)t];
+        if (id < 0 || id >= model.tok.W.R) continue;
+        const float* dxrow = dx.Row(t);
+        for (int c = 0; c < model.tok.W.C; c++) d_tokW.data[(size_t)id * model.tok.W.C + c] += dxrow[c];
+    }
+
+    if (acc) {
+        for (size_t i=0;i<acc->d_lmW.data.size();++i) acc->d_lmW.data[i] += dW_lm.data[i];
+        for (size_t i=0;i<acc->d_lmb.size();++i)      acc->d_lmb[i]      += db_lm[i];
+        for (size_t i=0;i<acc->d_posP.data.size();++i) acc->d_posP.data[i] += d_posP.data[i];
+        for (size_t i=0;i<acc->d_tokW.data.size();++i) acc->d_tokW.data[i] += d_tokW.data[i];
+    }
+
+    if (apply_updates) {
+        opt.t += 1;
+        Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.lm_head.b,      db_lm,      lmb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.pos.P.data,     d_posP.data, posP_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.tok.W.data,     d_tokW.data, tokW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+    }
+
+    return loss;
+}
+
+
 void NeuralNetwork::ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale) {
     auto apply_vec = [&](std::vector<float>& w, const std::vector<float>& g, AdamState& s) {
         std::vector<float> gs(g.size());
@@ -514,5 +917,36 @@ void NeuralNetwork::ApplyGradients(LauguageModel& model, const GradientAccumulat
             std::vector<float> gs = GG.d_ln2b; for (size_t i=0;i<gs.size();++i) gs[i] *= scale;
             Adam::StepInPlace(B.ln2.beta, gs, S.ln2b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, ++opt.t);
         }
+    }
+}
+
+void NeuralNetwork::UseGPU(ShaderTensor* gpu) { mGpu = gpu; }
+
+
+// Build required shaders.
+void NeuralNetwork::BuildShaders() {
+    
+    static const std::string kMatMulBiasCS = R"(#version 430
+    layout(std430, binding=0) buffer XBuf { float X[]; };
+    layout(std430, binding=1) buffer WBuf { float W[]; };
+    layout(std430, binding=2) buffer BBuf { float B[]; };
+    layout(std430, binding=3) buffer YBuf { float Y[]; };
+    layout(std430, binding=4) buffer Meta { int T; int IN; int OUT; };
+    layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+    void main() {
+        uint col = gl_GlobalInvocationID.x;
+        uint row = gl_GlobalInvocationID.y;
+        if (row >= uint(T) || col >= uint(OUT)) return;
+        float sum = 0.0;
+        for (uint k=0u; k<uint(IN); ++k) {
+            sum += X[row*IN + int(k)] * W[int(k)*OUT + int(col)];
+        }
+        Y[row*OUT + int(col)] = sum + B[int(col)];
+    }
+    )";
+    
+    if (!mGpu || g_matmul_built) return;
+    if (mGpu->buildComputeFromSource(kMatMulBiasCS.c_str(), "NN_MatMulBias")) {
+        g_matmul_built = true;
     }
 }
