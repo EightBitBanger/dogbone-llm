@@ -1,8 +1,7 @@
-<p align="center">
-  <img src="https://github.com/"  width="100" height="100">
-</p>
+# Transformer Language Model (C++ / CPU/GPU)
 
-<br>
+> A compact, transformer stack written in c++ with a simple repl interface, multithreaded CPU training, optional GPU acceleration
+
 <br>
 
 ## Features
@@ -17,4 +16,4 @@
   - Mish (Self regularized non-monotonic)
   - SwiGLU (Swish and GLU)
 - Sampler
-  - Top P&K with temperature
+  - Top-P/Top-K
