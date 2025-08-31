@@ -72,6 +72,12 @@ void ShaderTensor::setUInt(const std::string& name, unsigned v){ GLint loc = Loc
 void ShaderTensor::setFloat(const std::string& name, float v){ GLint loc = Loc(program_, uniformCache_, name); if (loc>=0) glUniform1f(loc, v); }
 void ShaderTensor::setIVec2(const std::string& name, int x, int y){ GLint loc = Loc(program_, uniformCache_, name); if (loc>=0) glUniform2i(loc, x, y); }
 
+
+void ShaderTensor::uploadRawSSBO(unsigned id, std::ptrdiff_t offset, const void* data, std::ptrdiff_t size) {
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, size, data);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
 unsigned ShaderTensor::createSSBO(const std::string& name, std::ptrdiff_t sizeBytes, unsigned bindingIndex,
                                   unsigned mapFlags, const void* initialData) {
     // Clean up existing buffer with the same name to avoid leaks
@@ -290,6 +296,6 @@ void ShaderTensor::finishReadback(ReadbackHandle h) {
 }
 
 void ShaderTensor::sync() {
-    glMemoryBarrier(GL_ALL_BARRIER_BITS);
-    glFinish();
+    //glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    //glFinish();
 }

@@ -1,6 +1,5 @@
 #include "main.h"
 
-
 int main() {
     std::string trainingFilename  = "training.txt";
     std::string modelFilename     = "dataset.model";
@@ -19,7 +18,7 @@ int main() {
     
     // Sampler
     const float samplerTemp           =  0.8f;           // Temperature  0.7  1.3
-    const int   samplerTopK           =  8;              // 0 will disable
+    const int   samplerTopK           =  100;            // 0 will disable
     const float samplerTopP           =  0.7f;           // 1.0 will disable
     
     // Context
@@ -60,33 +59,39 @@ int main() {
     
     GLContext gl;
     gl.init();
+    
+    // Set the GPU shader
     trainer.UseGPU(&shader);
     trainer.BuildShaders();
     
+    /*
     {
-    // X[2x3] * W[3x2] + B[2]  ->  Y[2x2]
-    float Xh[6] = { 1,2,3,  4,5,6 };
-    float Wh[6] = { 1,0,  0,1,  1,1 };  // [[1,0],[0,1],[1,1]]
-    float Bh[2] = { 0.5f, -1.0f };
-
-    ShaderTensor& st = shader;
-    st.createSSBO("X",    sizeof(Xh), 0); st.upload("X", Xh, sizeof(Xh));
-    st.createSSBO("W",    sizeof(Wh), 1); st.upload("W", Wh, sizeof(Wh));
-    st.createSSBO("B",    sizeof(Bh), 2); st.upload("B", Bh, sizeof(Bh));
-    st.createSSBO("Y",    sizeof(float)*4, 3);
-    int meta[3] = { 2,3,2 };  // T=2, IN=3, OUT=2
-    st.createSSBO("Meta", sizeof(meta), 4); st.upload("Meta", meta, sizeof(meta));
-
-    st.use();                       // use the previously built compute program
-    st.dispatch(1,1,1);
-    st.sync();
-
-    float Yh[4] = {};
-    st.downloadSync("Y", Yh, sizeof(Yh));
-    // Expect: row0 = [1*1+2*0+3*1+0.5, 1*0+2*1+3*1-1] = [4.5, 4.0]
-    //         row1 = [4*1+5*0+6*1+0.5, 4*0+5*1+6*1-1] = [10.5,10.0]
-    std::cout << "GPU self-test Y: [" << Yh[0] << "," << Yh[1] << "; " << Yh[2] << "," << Yh[3] << "]\n";
-}
+        // X[2x3] * W[3x2] + B[2]  ->  Y[2x2]
+        float Xh[6] = { 1,2,3,  4,5,6 };
+        float Wh[6] = { 1,0,  0,1,  1,1 };  // [[1,0],[0,1],[1,1]]
+        float Bh[2] = { 0.5f, -1.0f };
+        
+        ShaderTensor& st = shader;
+        st.createSSBO("X",    sizeof(Xh), 0); st.upload("X", Xh, sizeof(Xh));
+        st.createSSBO("W",    sizeof(Wh), 1); st.upload("W", Wh, sizeof(Wh));
+        st.createSSBO("B",    sizeof(Bh), 2); st.upload("B", Bh, sizeof(Bh));
+        st.createSSBO("Y",    sizeof(float)*4, 3);
+        int meta[3] = { 2,3,2 };  // T=2, IN=3, OUT=2
+        st.createSSBO("Meta", sizeof(meta), 4); st.upload("Meta", meta, sizeof(meta));
+        
+        st.use();                       // use the previously built compute program
+        st.dispatch(1,1,1);
+        st.sync();
+        
+        float Yh[4] = {};
+        st.downloadSync("Y", Yh, sizeof(Yh));
+        // Expect: row0 = [1*1+2*0+3*1+0.5, 1*0+2*1+3*1-1] = [4.5, 4.0]
+        //         row1 = [4*1+5*0+6*1+0.5, 4*0+5*1+6*1-1] = [10.5,10.0]
+        std::cout << "\n----------------------------------------------------------------\n";
+        std::cout << "GPU test Y: [" << Yh[0] << "," << Yh[1] << "; " << Yh[2] << "," << Yh[3] << "]\n\n";
+    }
+    */
+    
     // Set the activation function
     Activation.SetActivationFunction( ActivationType::SWIGLU );
     

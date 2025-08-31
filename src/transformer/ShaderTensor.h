@@ -13,6 +13,8 @@
 class ShaderTensor {
 public:
     ShaderTensor();
+    // Upload into an existing SSBO by GL id
+    void uploadRawSSBO(unsigned id, std::ptrdiff_t offset, const void* data, std::ptrdiff_t size);
     ~ShaderTensor();
 
     bool buildComputeFromSource(const char* src, const char* debugLabel=nullptr);

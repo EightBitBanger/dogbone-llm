@@ -2,6 +2,7 @@
 #define NEURAL_NETWORK_H
 
 #include <vector>
+#include <unordered_map>
 
 #include "Tensor2D.h"
 #include "LinearLayer.h"
@@ -66,9 +67,24 @@ public:
     
     // Attach a ShaderTensor for optional GPU acceleration (pass nullptr to disable).
     void UseGPU(ShaderTensor* st);
-    
+
+    // Upload all model weights once into GPU SSBOs (resident mode).
+    void UploadWeightsToGPU(LauguageModel& model);
+    // Refresh resident SSBOs from current CPU weights (call after optimizer step).
+    void RefreshGPUWeightsFromModel(const LauguageModel& model);
+    // Release all resident buffers.
+    void ReleaseGPUWeights();
+    // Toggle resident-weight path.
+    void EnableResidentWeights(bool enable);
+
+    struct GPUResident {
+        bool enabled = false;
+        struct WeightBuf { unsigned w=0, b=0; std::ptrdiff_t wBytes=0, bBytes=0; int IN=0, OUT=0; };
+        std::unordered_map<const LinearLayer*, WeightBuf> map;
+    } mGPUResident;
+
 private:
-    
+
     ShaderTensor* mGpu = nullptr;
 };
 

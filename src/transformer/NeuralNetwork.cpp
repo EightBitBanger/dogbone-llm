@@ -2,6 +2,8 @@
 #include "CrossEntropyLoss.h"
 #include <cstring>
 #include "ShaderTensor.h"
+#include <cstdint>
+#include <string>
 
 // === GPU linear forward via ShaderTensor (X [T x IN] * W [IN x OUT] + b [OUT]) ===
 static bool gpu_linear_forward(ShaderTensor* gpu, const Tensor2D& X, const LinearLayer& lin, Tensor2D& Y) {
@@ -47,6 +49,41 @@ static bool gpu_linear_forward(ShaderTensor* gpu, const Tensor2D& X, const Linea
 }
 
 
+
+// === GPU linear forward using resident W/B (weights already uploaded) ===
+static bool gpu_linear_forward_resident(ShaderTensor* gpu, const Tensor2D& X, int IN, int OUT, Tensor2D& Y) {
+    if (!gpu) return false;
+    const int T = X.R;
+    if (X.C != IN) return false;
+
+    std::ptrdiff_t bytesX = (std::ptrdiff_t)T * IN * sizeof(float);
+    std::ptrdiff_t bytesY = (std::ptrdiff_t)T * OUT * sizeof(float);
+    int meta[3] = { T, IN, OUT };
+
+    gpu->ensureSSBO("X",   bytesX, 0);
+    gpu->ensureSSBO("Y",   bytesY, 3);
+    // meta is tiny; keep as SSBO binding 4 for parity with existing shader
+    gpu->ensureSSBO("Meta", (std::ptrdiff_t)sizeof(meta), 4);
+
+    gpu->upload("X", X.data.data(), bytesX);
+    gpu->upload("Meta", meta, (std::ptrdiff_t)sizeof(meta));
+
+    unsigned gx = (unsigned)((OUT + 15) / 16);
+    unsigned gy = (unsigned)((T   + 15) / 16);
+    gpu->use();
+    gpu->dispatch(gx, gy, 1);
+
+    // blocking readback for now; can be swapped to async later
+    std::vector<float> hostY((size_t)T * (size_t)OUT);
+    gpu->downloadSync("Y", hostY.data(), bytesY);
+
+    Y = Tensor2D(T, OUT);
+    for (int r = 0; r < T; ++r) {
+        float* yr = Y.Row(r);
+        std::memcpy(yr, hostY.data() + (size_t)r * OUT, (size_t)OUT * sizeof(float));
+    }
+    return true;
+}
 void NeuralNetwork::InitScratch(int max_T) {
     attnScratch_p.resize((size_t)max_T);
     attnScratch_gs.resize((size_t)max_T);
@@ -503,6 +540,8 @@ float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, 
 
 float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets,
                              int pad_id, GradientAccumulator* acc, bool apply_updates) {
+    if (mGPUResident.enabled && mGPUResident.map.empty()) { UploadWeightsToGPU(model); }
+
     // If no GPU is attached, just run the CPU path.
     if (!mGpu) return Step(model, inputs, targets, pad_id, acc, apply_updates);
 
@@ -510,7 +549,7 @@ float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& input
         if ((int)layer_states.size() != model.n_layers) layer_states.resize((size_t)model.n_layers);
     }
 
-    // ---------- forward with caches (GPU-accelerated linears) ----------
+    // Forward with caches (GPU-accelerated linears)
     Tensor2D x0 = model.tok.Forward(inputs); // [T, d_model]  (emb lookup remains on CPU)
     model.pos.AddInPlace(x0);
 
@@ -531,9 +570,24 @@ float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& input
     // prefer GPU for linears; fallback to CPU if the kernel declines
     auto LforwardGPU = [&](const LinearLayer& L, const Tensor2D& Xin) -> Tensor2D {
         Tensor2D Y;
+        // If resident weights are enabled and present for this linear, bind them and skip W/B uploads.
+        if (mGpu && mGPUResident.enabled) {
+            auto it = mGPUResident.map.find(&L);
+            if (it != mGPUResident.map.end()) {
+                const auto& wb = it->second;
+                // Bind resident buffers to expected bindings (1=W, 2=B)
+                mGpu->adoptSSBO("W", wb.w, wb.wBytes, 1);
+                mGpu->adoptSSBO("B", wb.b, wb.bBytes, 2);
+                if (gpu_linear_forward_resident(mGpu, Xin, wb.IN, wb.OUT, Y)) {
+                    return Y;
+                }
+            }
+        }
+        // Fallback: upload W/B ad-hoc for this call
         if (gpu_linear_forward(mGpu, Xin, L, Y)) {
             return Y;
         }
+        // CPU fallback
         return L.Forward(Xin);
     };
 
@@ -618,7 +672,7 @@ float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& input
     }
 
     // ensure GPU writes are visible before CPU consumes results (conservative)
-    mGpu->sync();
+    /* sync skipped: downloads already synchronize */
 
     float loss = CrossEntropyLoss(logits, targets, pad_id);
 
@@ -918,6 +972,9 @@ void NeuralNetwork::ApplyGradients(LauguageModel& model, const GradientAccumulat
             Adam::StepInPlace(B.ln2.beta, gs, S.ln2b_s, opt.lr, opt.beta1, opt.beta2, opt.eps, ++opt.t);
         }
     }
+    // Keep resident GPU buffers in sync with CPU weights after optimizer step
+    if (mGpu && mGPUResident.enabled) { RefreshGPUWeightsFromModel(model); }
+
 }
 
 void NeuralNetwork::UseGPU(ShaderTensor* gpu) { mGpu = gpu; }
@@ -932,16 +989,49 @@ void NeuralNetwork::BuildShaders() {
     layout(std430, binding=2) buffer BBuf { float B[]; };
     layout(std430, binding=3) buffer YBuf { float Y[]; };
     layout(std430, binding=4) buffer Meta { int T; int IN; int OUT; };
+    
     layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+    
+    shared float sX[16][16];
+    shared float sW[16][16];
+    
     void main() {
         uint col = gl_GlobalInvocationID.x;
         uint row = gl_GlobalInvocationID.y;
-        if (row >= uint(T) || col >= uint(OUT)) return;
+    
         float sum = 0.0;
-        for (uint k=0u; k<uint(IN); ++k) {
-            sum += X[row*IN + int(k)] * W[int(k)*OUT + int(col)];
+    
+        uint tiles = uint((IN + 15) / 16);
+        for (uint tile = 0u; tile < tiles; ++tile) {
+            uint kx = tile * 16u + gl_LocalInvocationID.x;
+            uint ky = tile * 16u + gl_LocalInvocationID.y;
+    
+            // load a 16x16 tile of X (row-major) and W (row-major) with bounds checks
+            if (row < uint(T) && kx < uint(IN)) {
+                sX[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = X[int(row) * IN + int(kx)];
+            } else {
+                sX[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
+            }
+    
+            if (ky < uint(IN) && col < uint(OUT)) {
+                sW[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = W[int(ky) * OUT + int(col)];
+            } else {
+                sW[gl_LocalInvocationID.y][gl_LocalInvocationID.x] = 0.0;
+            }
+    
+            barrier();
+    
+            // 16-wide inner product from the cached tiles
+            for (uint k = 0u; k < 16u; ++k) {
+                sum += sX[gl_LocalInvocationID.y][k] * sW[k][gl_LocalInvocationID.x];
+            }
+    
+            barrier();
         }
-        Y[row*OUT + int(col)] = sum + B[int(col)];
+    
+        if (row < uint(T) && col < uint(OUT)) {
+            Y[int(row) * OUT + int(col)] = sum + B[int(col)];
+        }
     }
     )";
     
@@ -950,3 +1040,84 @@ void NeuralNetwork::BuildShaders() {
         g_matmul_built = true;
     }
 }
+void NeuralNetwork::EnableResidentWeights(bool enable) {
+    mGPUResident.enabled = enable;
+}
+
+void NeuralNetwork::ReleaseGPUWeights() {
+    if (!mGpu) { mGPUResident.map.clear(); mGPUResident.enabled=false; return; }
+    // We only drop our bookkeeping; actual GL buffers are owned by ShaderTensor's buffer map.
+    mGPUResident.map.clear();
+    mGPUResident.enabled = false;
+}
+
+
+static void UploadOneLinear(ShaderTensor* gpu, const LinearLayer& L,
+                            NeuralNetwork::GPUResident::WeightBuf& out) {
+    const int IN = L.W.R;
+    const int OUT = L.W.C;
+    std::ptrdiff_t wBytes = (std::ptrdiff_t)IN * OUT * sizeof(float);
+    std::ptrdiff_t bBytes = (std::ptrdiff_t)OUT * sizeof(float);
+
+    // Use unique names per LinearLayer address so ShaderTensor tracks them separately
+    uintptr_t key = reinterpret_cast<uintptr_t>(&L);
+    std::string wName = "W_resident_" + std::to_string(key);
+    std::string bName = "B_resident_" + std::to_string(key);
+
+    unsigned wid = gpu->createSSBO(wName, wBytes, /*binding*/99, 0, L.W.data.data());
+    unsigned bid = gpu->createSSBO(bName, bBytes, /*binding*/99, 0, L.b.data());
+
+    out.w = wid; out.b = bid; out.wBytes = wBytes; out.bBytes = bBytes; out.IN = IN; out.OUT = OUT;
+}
+
+
+void NeuralNetwork::UploadWeightsToGPU(LauguageModel& model) {
+    if (!mGpu) return;
+    mGPUResident.map.clear();
+
+    auto add = [&](const LinearLayer& L){
+        GPUResident::WeightBuf wb;
+        UploadOneLinear(mGpu, L, wb);
+        mGPUResident.map[&L] = wb;
+    };
+
+    // per-layer linears
+    for (int l=0; l<model.n_layers; ++l) {
+        const TransformerBlock& B = model.layers[(size_t)l];
+        add(B.attn.Wq);
+        add(B.attn.Wk);
+        add(B.attn.Wv);
+        add(B.attn.Wo);
+        add(B.ffn.fc1);
+        add(B.ffn.fc2);
+    }
+    // output head
+    add(model.lm_head);
+
+    mGPUResident.enabled = true;
+}
+
+void NeuralNetwork::RefreshGPUWeightsFromModel(const LauguageModel& model) {
+    if (!mGpu) return;
+    if (!mGPUResident.enabled) return;
+
+    auto update = [&](const LinearLayer& L){
+        auto it = mGPUResident.map.find(&L);
+        if (it == mGPUResident.map.end()) return;
+        auto& wb = it->second;
+        if (wb.w && wb.wBytes) mGpu->uploadRawSSBO(wb.w, 0, L.W.data.data(), wb.wBytes);
+        if (wb.b && wb.bBytes) mGpu->uploadRawSSBO(wb.b, 0, L.b.data(), wb.bBytes);
+    };
+
+    for (int l=0; l<model.n_layers; ++l) {
+        const TransformerBlock& B = model.layers[(size_t)l];
+        update(B.attn.Wq);
+        update(B.attn.Wk);
+        update(B.attn.Wv);
+        update(B.attn.Wo);
+        update(B.ffn.fc1);
+        update(B.ffn.fc2);
+    }
+    update(model.lm_head);
+}
+
