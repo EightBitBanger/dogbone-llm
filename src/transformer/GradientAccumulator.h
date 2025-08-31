@@ -2,7 +2,7 @@
 #define GRADIENT_ACCUMULATOR_H
 
 #include "Tensor2D.h"
-#include "TransformerLauguageModel.h"
+#include "LauguageModel.h"
 
 class GradientAccumulator {
 public:
@@ -27,7 +27,7 @@ public:
     };
     std::vector<BlockGrads> layers;
     
-    void InitLike(const TransformerLauguageModel& model);
+    void InitLike(const LauguageModel& model);
     
     void Add(const GradientAccumulator& other);
     

@@ -36,7 +36,7 @@ static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v
 
 
 static void TrainModel(std::string& trainingFilename, std::string& modelFilename,
-                       TransformerLauguageModel& model, Vocabulary& vocab,
+                       LauguageModel& model, Vocabulary& vocab,
                        int layerWidth, int headCount, int feedWidth, int layerDepth,
                        int contextSize, float learningRate, float learningRateMin, 
                        float learningRateDecay, float& avgLoss, float lossDropout);

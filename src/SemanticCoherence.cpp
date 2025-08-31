@@ -12,7 +12,7 @@ void SemanticCoherence::EmitToken(std::string word) {
 
 
 
-bool SemanticCoherence::ProcessTokenStream(TransformerLauguageModel& model,
+bool SemanticCoherence::ProcessTokenStream(LauguageModel& model,
                                            Vocabulary& vocab,
                                            SamplingParams& sampler,
                                            ContextWindow& context,

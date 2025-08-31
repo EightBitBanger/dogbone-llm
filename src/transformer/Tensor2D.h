@@ -16,6 +16,9 @@ public:
     float* Row(int r);
     const float* Row(int r) const;
     
+    float& operator()(int r, int c) { return data[(size_t)r * C + c]; }
+    float  operator()(int r, int c) const { return data[(size_t)r * C + c]; }
+    
     void Zero();
 };
 

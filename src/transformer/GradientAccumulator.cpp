@@ -1,6 +1,6 @@
 #include "GradientAccumulator.h"
 
-void GradientAccumulator::InitLike(const TransformerLauguageModel& model) {
+void GradientAccumulator::InitLike(const LauguageModel& model) {
     d_tokW = Tensor2D(model.tok.W.R, model.tok.W.C); std::fill(d_tokW.data.begin(), d_tokW.data.end(), 0.0f);
     d_posP = Tensor2D(model.pos.P.R, model.pos.P.C); std::fill(d_posP.data.begin(), d_posP.data.end(), 0.0f);
     d_lmW  = Tensor2D(model.lm_head.W.R, model.lm_head.W.C); std::fill(d_lmW.data.begin(), d_lmW.data.end(), 0.0f);
@@ -23,8 +23,8 @@ void GradientAccumulator::InitLike(const TransformerLauguageModel& model) {
         G.dWo = Tensor2D(model.d_model, model.d_model); std::fill(G.dWo.data.begin(), G.dWo.data.end(), 0.0f);
         G.dbo.assign((size_t)model.d_model, 0.0f);
         
-        G.d_fc1W = Tensor2D(model.d_model, model.d_ff); std::fill(G.d_fc1W.data.begin(), G.d_fc1W.data.end(), 0.0f);
-        G.d_fc1b.assign((size_t)model.d_ff, 0.0f);
+        G.d_fc1W = Tensor2D(model.d_model, Activation.d_ff_mul * model.d_ff); std::fill(G.d_fc1W.data.begin(), G.d_fc1W.data.end(), 0.0f);
+        G.d_fc1b.assign((size_t)(Activation.d_ff_mul * model.d_ff), 0.0f);
         G.d_fc2W = Tensor2D(model.d_ff, model.d_model); std::fill(G.d_fc2W.data.begin(), G.d_fc2W.data.end(), 0.0f);
         G.d_fc2b.assign((size_t)model.d_model, 0.0f);
     }

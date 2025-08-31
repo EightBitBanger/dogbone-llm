@@ -52,7 +52,10 @@ int main() {
     float lossDrop = learningLossDropout;
     
     Vocabulary vocab;
-    TransformerLauguageModel model;
+    LauguageModel model;
+    
+    // Set the activation function
+    Activation.SetActivationFunction( ActivationType::SWIGLU );
     
     // Check for the model file to load raw training text
     std::string trainingText;
@@ -105,7 +108,7 @@ int main() {
                 FileDelete(modelFilename);
                 FileDelete(modelFilename + std::string(".state"));
                 vocab = Vocabulary();
-                model = TransformerLauguageModel();
+                model = LauguageModel();
                 std::cout << "Use /train to retrain a new model.\n\n";
                 continue;
             }
@@ -192,7 +195,7 @@ int main() {
 
 
 static void TrainModel(std::string& trainingFilename, std::string& modelFilename,
-                       TransformerLauguageModel& model, Vocabulary& vocab,
+                       LauguageModel& model, Vocabulary& vocab,
                        int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                        float learningRate, float learningRateMin, float learningRateDecay, 
                        float& avgLoss, float lossDropout) {
@@ -227,7 +230,7 @@ static void TrainModel(std::string& trainingFilename, std::string& modelFilename
     } else {
         // Fresh start: build vocab and model
         FitVocab(vocab, corpus);
-        model   = TransformerLauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
+        model   = LauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
         trainer = NeuralNetwork(learningRate);
         currentEpoch        = 0;
         currentLearningRate = learningRate;
@@ -252,8 +255,8 @@ static void TrainModel(std::string& trainingFilename, std::string& modelFilename
     SYSTEM_INFO si; GetSystemInfo(&si);
     logicalProcs = (int)si.dwNumberOfProcessors;
     if (logicalProcs <= 0) logicalProcs = 1;
-
-    // Helper to pin the *current* thread to a specific logical CPU
+    
+    // Attempt to spread the threads across many cores
     auto pin_this_thread_to_cpu = [](unsigned int cpuIndex) {
         const unsigned int kBits = (unsigned int)(sizeof(DWORD_PTR) * 8u);
         DWORD_PTR mask = (cpuIndex >= kBits) ? 0 : ( (DWORD_PTR)1u << (cpuIndex % kBits) );
@@ -261,7 +264,7 @@ static void TrainModel(std::string& trainingFilename, std::string& modelFilename
             SetThreadAffinityMask(GetCurrentThread(), mask);
         }
     };
-
+    
     bool keepTraining = true;
     while (keepTraining) {
         float runningLossSum     = 0.0f;

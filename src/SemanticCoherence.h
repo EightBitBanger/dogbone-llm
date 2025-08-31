@@ -3,7 +3,7 @@
 
 #include <unordered_set>
 
-#include "Transformer/TransformerLauguageModel.h"
+#include "Transformer/LauguageModel.h"
 #include "ContextWindow.h"
 #include "sampler.h"
 #include "tokenizer.h"
@@ -28,7 +28,7 @@ class SemanticCoherence {
 public:
     
     // Sample a token context stream through a model via a given vocabulary and sentence structure.
-    bool ProcessTokenStream(TransformerLauguageModel& model, Vocabulary& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
+    bool ProcessTokenStream(LauguageModel& model, Vocabulary& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
     
     // Print a token to the stream.
     void EmitToken(std::string word);

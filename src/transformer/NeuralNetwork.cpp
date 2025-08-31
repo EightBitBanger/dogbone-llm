@@ -85,7 +85,7 @@ void NeuralNetwork::LayerNormBackward(const Tensor2D& x, const LayerNorm& ln, co
 }
 
 // One step on a single (inputs, targets)
-float NeuralNetwork::Step(TransformerLauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
+float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
                           int pad_id, GradientAccumulator* acc, bool apply_updates) {
     if (apply_updates) { if ((int)layer_states.size() != model.n_layers) layer_states.resize((size_t)model.n_layers); }
 
@@ -173,16 +173,13 @@ float NeuralNetwork::Step(TransformerLauguageModel& model, const std::vector<int
         C.x_attn_res = C.x_in;
         AddInPlace(C.x_attn_res, C.attn_out);          // residual add for attention block
         
-        // mlp block with pre norm and gelu, then residual add
-        C.n2      = B.ln2.Forward(C.x_attn_res);       // pre norm before feed forward
-        C.ff1_out = B.ffn.fc1.Forward(C.n2);           // first linear layer (expansion)
-        C.ff1_act = C.ff1_out;                         // copy then apply activation in place
-        GELU_InPlace(C.ff1_act);                       // gelu nonlinearity
-        C.ff2_out = B.ffn.fc2.Forward(C.ff1_act);      // second linear layer (projection back)
-        
+        // mlp activation block with pre norm and activation, then residual add
+        C.n2       = B.ln2.Forward(C.x_attn_res);
+        C.ff1_out  = B.ffn.fc1.Forward(C.n2);       // [T, d_ff_mul * d_ff]
+        C.ff1_act  = Activation.Forward(C.ff1_out); // [T, d_ff]
+        C.ff2_out  = B.ffn.fc2.Forward(C.ff1_act);
         x = C.x_attn_res;
-        AddInPlace(x, C.ff2_out);                      // residual add for mlp block
-        
+        AddInPlace(x, C.ff2_out);                   // residual add for mlp block
     }
 
     Tensor2D logits = model.lm_head.Forward(x);
@@ -242,16 +239,15 @@ float NeuralNetwork::Step(TransformerLauguageModel& model, const std::vector<int
         Tensor2D d_x_attn_res = dx;
 
         // Back through fc2
-        Tensor2D dW_fc2, db_fc2_dx;
+        Tensor2D dW_fc2, dx_fc2;
         std::vector<float> db_fc2;
-        Tensor2D dx_fc2;
         LinearBackward(C.ff1_act, B.ffn.fc2, d_ff2_out, dW_fc2, db_fc2, dx_fc2);
 
-        // Back through GELU and fc1
-        Tensor2D d_ff1_act = dx_fc2;
+        // back through activation (ff1_out is [T, 2*d_ff], dx_fc2 is [T, d_ff])
         Tensor2D d_ff1_out;
-        GELU_Backward(C.ff1_out, d_ff1_act, d_ff1_out);
+        Activation.Backward(C.ff1_out, dx_fc2, d_ff1_out);
 
+        // back through fc1
         Tensor2D dW_fc1, dx_fc1;
         std::vector<float> db_fc1;
         LinearBackward(C.n2, B.ffn.fc1, d_ff1_out, dW_fc1, db_fc1, dx_fc1);
@@ -435,10 +431,7 @@ float NeuralNetwork::Step(TransformerLauguageModel& model, const std::vector<int
     for (int t = 0; t < (int)inputs.size(); t++) {
         int id = inputs[(size_t)t];
         if (id < 0 || id >= model.tok.W.R) continue;
-        //float* row = model.tok.W.Row(id);
         const float* dxrow = dx.Row(t);
-        // for Adam we need gradient storage separately
-        // accumulate into temp tensor
         for (int c = 0; c < model.tok.W.C; c++) d_tokW.data[(size_t)id * model.tok.W.C + c] += dxrow[c];
     }
 
@@ -451,18 +444,18 @@ float NeuralNetwork::Step(TransformerLauguageModel& model, const std::vector<int
     }
 
     if (apply_updates) {
-    // Top-level Adam steps (lm_head and pos/tok)
-    opt.t += 1;
-    Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
-    Adam::StepInPlace(model.lm_head.b, db_lm, lmb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
-    Adam::StepInPlace(model.pos.P.data, d_posP.data, posP_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
-    Adam::StepInPlace(model.tok.W.data, d_tokW.data, tokW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        // Top-level Adam steps (lm_head and pos/tok)
+        opt.t += 1;
+        Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.lm_head.b, db_lm, lmb_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.pos.P.data, d_posP.data, posP_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
+        Adam::StepInPlace(model.tok.W.data, d_tokW.data, tokW_s, opt.lr, opt.beta1, opt.beta2, opt.eps, opt.t);
     }
 
     return loss;
 }
 
-void NeuralNetwork::ApplyGradients(TransformerLauguageModel& model, const GradientAccumulator& G, float scale) {
+void NeuralNetwork::ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale) {
     auto apply_vec = [&](std::vector<float>& w, const std::vector<float>& g, AdamState& s) {
         std::vector<float> gs(g.size());
         for (size_t i=0;i<g.size();++i) gs[i] = g[i] * scale;

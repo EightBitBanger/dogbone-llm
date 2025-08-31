@@ -118,7 +118,7 @@ void TokenSampler::ApplyTopP(std::vector<float>& probs, float top_p) {
     }
 }
 
-int TokenSampler::GetNextToken(const TransformerLauguageModel& model,
+int TokenSampler::GetNextToken(const LauguageModel& model,
                              const std::vector<int>& context_ids,
                              const SamplingParams& P) {
     if (P.seed != 0u) std::srand(P.seed + (unsigned int)context_ids.size());
@@ -163,7 +163,7 @@ int TokenSampler::GetNextToken(const TransformerLauguageModel& model,
 // - max_candidates: cap the list length (e.g., 5, 20). If <= 0, returns all passing min_prob.
 // - min_prob: filter out tiny tails (e.g., 1e-6f). Set to 0 to keep everything allowed by top-k/top-p.
 // - renormalize: if true, re-normalizes probs across the returned set so they sum to 1.0.
-std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const TransformerLauguageModel& model, const std::vector<int>& context_ids, const SamplingParams& P,
+std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LauguageModel& model, const std::vector<int>& context_ids, const SamplingParams& P,
                                                             int max_candidates, float min_prob, bool renormalize) {
     if (P.seed != 0u) std::srand(P.seed + (unsigned int)context_ids.size());
     

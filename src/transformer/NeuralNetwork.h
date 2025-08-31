@@ -6,7 +6,7 @@
 #include "Tensor2D.h"
 #include "LinearLayer.h"
 #include "LayerNormalization.h"
-#include "TransformerLauguageModel.h"
+#include "LauguageModel.h"
 #include "AdamOptimization.h"
 #include "GradientAccumulator.h"
 
@@ -48,11 +48,11 @@ public:
     void LayerNormBackward(const Tensor2D& x, const LayerNorm& ln, const Tensor2D& dy, std::vector<float>& dgamma, std::vector<float>& dbeta, Tensor2D& dx);
     
     // Run Forward + Backward For One Sequence And Optionally Apply Adam Updates.
-    float Step(TransformerLauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
+    float Step(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
                int pad_id, GradientAccumulator* acc = NULL, bool apply_updates = true);
     
     // Apply Accumulated Gradients In A Single Adam Step (Optional Scaling).
-    void ApplyGradients(TransformerLauguageModel& model, const GradientAccumulator& G, float scale = 1.0f);
+    void ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale = 1.0f);
 };
 
 #endif

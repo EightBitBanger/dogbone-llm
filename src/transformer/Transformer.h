@@ -4,7 +4,7 @@
 #include "Tensor2D.h"
 #include "LinearLayer.h"
 #include "LayerNormalization.h"
-#include "TransformerLauguageModel.h"
+#include "LauguageModel.h"
 #include "AdamOptimization.h"
 #include "GradientAccumulator.h"
 
