@@ -88,7 +88,12 @@ public:
 
     struct GPUResident {
         bool enabled = false;
-        struct WeightBuf { unsigned w=0, b=0; std::ptrdiff_t wBytes=0, bBytes=0; int IN=0, OUT=0; };
+        struct WeightBuf {
+            unsigned w=0, b=0;
+            std::ptrdiff_t wBytes=0, bBytes=0;
+            int IN_=0;
+            int OUT_=0;
+        };
         std::unordered_map<const LinearLayer*, WeightBuf> map;
     } mGPUResident;
     

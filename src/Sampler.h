@@ -19,8 +19,8 @@ struct SamplingParams {
 };
 
 struct TokenCandidate {
-    int   id;
-    float prob;            // normalized probability (optionally re-normalized over returned set)
+    int   id;              // Token word index
+    float prob;            // normalized probability (optionally re-normalized over returned set) usually between 10 - -20 ish
     float logit;           // pre-softmax score after penalties/temperature/top-k
     float cumulative_prob; // cumulative probability in the returned, sorted list
 };
@@ -57,8 +57,6 @@ public:
     std::vector<TokenCandidate> GetProbableTokens(const LauguageModel& model, const std::vector<int>& context_ids, 
                                                   const SamplingParams& P, int max_candidates, float min_prob, bool renormalize);
 };
-
-bool TokenCandidateGreater(const TokenCandidate& a, const TokenCandidate& b);
 
 extern TokenSampler Sampler;
 #endif

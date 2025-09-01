@@ -1,7 +1,6 @@
 #include "Tensor2D.h"
 #include "Activation.h"
 
-#include <iostream>
 #include <algorithm>
 #include <cmath>
 
@@ -43,6 +42,7 @@ static inline float softplus_prime(float x) {
     return 1.0f / (1.0f + std::exp(-x)); // or sigmoid_stable(x)
 }
 
+
 // ---------------- GELU ----------------
 Tensor2D ActivationFunctions::GELU_Forward(const Tensor2D& x) {
     const float c = 0.7978845608028654f; // sqrt(2/pi)
@@ -59,6 +59,7 @@ Tensor2D ActivationFunctions::GELU_Forward(const Tensor2D& x) {
     }
     return y;
 }
+
 void ActivationFunctions::GELU_Backward(const Tensor2D& x_pre, const Tensor2D& dy, Tensor2D& dx) {
     const float c = 0.7978845608028654f; // sqrt(2/pi)
     const float k = 0.044715f;
@@ -79,12 +80,14 @@ void ActivationFunctions::GELU_Backward(const Tensor2D& x_pre, const Tensor2D& d
     }
 }
 
+
 // ---------------- ReLU ----------------
 Tensor2D ActivationFunctions::ReLU_Forward(const Tensor2D& x) {
     Tensor2D y(x.R, x.C);
     for (size_t i = 0; i < x.data.size(); ++i) y.data[i] = x.data[i] > 0.0f ? x.data[i] : 0.0f;
     return y;
 }
+
 void ActivationFunctions::ReLU_Backward(const Tensor2D& x_pre, const Tensor2D& dy, Tensor2D& dx) {
     dx = Tensor2D(x_pre.R, x_pre.C);
     const int N = x_pre.R * x_pre.C;
@@ -94,6 +97,7 @@ void ActivationFunctions::ReLU_Backward(const Tensor2D& x_pre, const Tensor2D& d
         dx.data[(size_t)i] = (v > 0.0f) ? g : 0.0f;
     }
 }
+
 
 // ---------------- SiLU ----------------
 Tensor2D ActivationFunctions::SiLU_Forward(const Tensor2D& x) {
@@ -109,6 +113,7 @@ Tensor2D ActivationFunctions::SiLU_Forward(const Tensor2D& x) {
     }
     return y;
 }
+
 void ActivationFunctions::SiLU_Backward(const Tensor2D& x_pre, const Tensor2D& dy, Tensor2D& dx) {
     dx = Tensor2D(x_pre.R, x_pre.C);
     for (int r = 0; r < x_pre.R; ++r) {
@@ -123,6 +128,7 @@ void ActivationFunctions::SiLU_Backward(const Tensor2D& x_pre, const Tensor2D& d
         }
     }
 }
+
 
 // ---------------- Mish ----------------
 Tensor2D ActivationFunctions::Mish_Forward(const Tensor2D& x) {
@@ -139,6 +145,7 @@ Tensor2D ActivationFunctions::Mish_Forward(const Tensor2D& x) {
     }
     return y;
 }
+
 void ActivationFunctions::Mish_Backward(const Tensor2D& x_pre, const Tensor2D& dy, Tensor2D& dx) {
     dx = Tensor2D(x_pre.R, x_pre.C);
     for (int r = 0; r < x_pre.R; ++r) {
@@ -155,6 +162,7 @@ void ActivationFunctions::Mish_Backward(const Tensor2D& x_pre, const Tensor2D& d
         }
     }
 }
+
 
 // ---------------- SwiGLU ----------------
 // x_concat = [A | B] along features (C = 2*H). Output is H features: A * SiLU(B).
@@ -174,6 +182,7 @@ Tensor2D ActivationFunctions::SwiGLU_Forward(const Tensor2D& x_concat) {
     }
     return y;
 }
+
 void ActivationFunctions::SwiGLU_Backward(const Tensor2D& x_concat, const Tensor2D& dy_half, Tensor2D& dx_concat) {
     const int R = x_concat.R;
     const int C = x_concat.C;

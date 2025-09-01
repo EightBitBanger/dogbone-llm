@@ -8,7 +8,6 @@
 #include <string>
 #include <unordered_map>
 
-#include <iostream>
 #include <sstream>
 
 #include <algorithm>
@@ -22,14 +21,20 @@
 #include <ctime>
 #include <cfloat>
 
-#include "tokenizer.h"
-#include "modelio.h"
-#include "sampler.h"
+#include "Timer.h"
+#include "Print.h"
 #include "GLContext.h"
+
+#include "Tokenizer.h"
+#include "Modelio.h"
+#include "Sampler.h"
+
 #include "SemanticCoherence.h"
+#include "GrammaticalCongruence.h"
 #include "ContextWindow.h"
 #include "Transformer/Transformer.h"
-#include "Tests/test.h"
+
+//#include "Tests/test.h"
 
 #include <windows.h>
 
@@ -38,13 +43,13 @@ static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v
 
 
 static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab,
+                          LauguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout);
 
 static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab,
+                          LauguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout,
@@ -105,7 +110,7 @@ static void BuildNextTokenDataset(const Tokenizer& vocab,
 
     for (const std::string& line : corpus) {
         // Tokenize line with BOS/EOS so the model learns sentence boundaries
-        std::vector<int> ids = Encode(vocab, line, /*add_bos=*/true, /*add_eos=*/true);
+        std::vector<int> ids = Encode(vocab, line);
         if (ids.size() < 2) continue;
 
         // Slide a window of `block_len` over ids with the given stride

@@ -6,7 +6,6 @@
 #include "Activation.h"
 #include "../Transformer/Tensor2D.h"
 
-// ---------- tiny helpers ----------
 static inline bool almost_equal(float a, float b, float atol, float rtol) {
     float diff = std::fabs(a - b);
     float tol  = atol + rtol * std::max(std::fabs(a), std::fabs(b));

@@ -45,11 +45,6 @@ int TokenSampler::SampleFromProbs(const std::vector<float>& probs) {
     return V - 1;
 }
 
-// Optional: comparator if you don't want a lambda
-bool TokenCandidateGreater(const TokenCandidate& a, const TokenCandidate& b) {
-    return a.prob > b.prob;
-}
-
 // Apply penalties to logits based on the context.
 void TokenSampler::ApplyRepetitionPenalties(std::vector<float>& logits,
                                             const std::vector<int>& context_ids,
@@ -167,19 +162,19 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LauguageModel&
                                                             int max_candidates, float min_prob, bool renormalize) {
     if (P.seed != 0u) std::srand(P.seed + (unsigned int)context_ids.size());
     
-    // 1) Forward + grab last-step logits
+    // Forward the context
     Tensor2D logits_t = model.Forward(context_ids);
     const int V = logits_t.C;
     const float* last = logits_t.Row(logits_t.R - 1);
     
-    // 2) Copy logits into a mutable buffer
+    // Copy logits into a mutable buffer
     std::vector<float> logits((size_t)V);
     for (int i = 0; i < V; ++i) logits[(size_t)i] = last[i];
     
-    // 3) Repetition penalties (presence/frequency)
+    // Repetition penalties (presence/frequency)
     Sampler.ApplyRepetitionPenalties(logits, context_ids, P.presence_penalty, P.frequency_penalty);
     
-    // 4) Temperature / Greedy edge case
+    // Temperature / Greedy edge case
     if (P.temperature <= 0.0f) {
         const int idx = Sampler.ArgMax(&logits[0], V);
     
@@ -191,21 +186,21 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LauguageModel&
         return out;
     }
     
-    // 5) Scale logits by 1/T
+    // Scale logits by 1/T
     const float invT = 1.0f / P.temperature;
     for (int i = 0; i < V; ++i) logits[(size_t)i] *= invT;
     
-    // 6) Top-k pruning in logit space (zero/neg-inf out disallowed)
+    // Top-k pruning in logit space (zero/neg-inf out disallowed)
     if (P.top_k > 0) Sampler.ApplyTopK(logits, P.top_k);
     
-    // 7) Softmax -> probabilities
+    // Softmax -> probabilities
     std::vector<float> probs;
     Sampler.SoftmaxStable(logits, probs); // probs.size() == V
     
-    // 8) Top-p / nucleus (this typically zeros low-prob tail and renormalizes)
+    // Top-p / nucleus (this typically zeros low-prob tail and renormalizes)
     if (P.top_p < 1.0f) Sampler.ApplyTopP(probs, P.top_p);
     
-    // 9) Collect candidates above min_prob (and not masked)
+    // Collect candidates above min_prob (and not masked)
     std::vector<TokenCandidate> cands;
     cands.reserve((size_t)V);
     for (int i = 0; i < V; ++i) {
@@ -221,25 +216,20 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LauguageModel&
     }
     
     if (cands.empty()) {
-        // Fallback: return argmax even if it didn't pass thresholds
-        const int idx = Sampler.ArgMax(&logits[0], V);
         std::vector<TokenCandidate> out(1);
-        out[0].id = idx;
-        out[0].logit = logits[(size_t)idx];
-        out[0].prob = 1.0f;
-        out[0].cumulative_prob = 1.0f;
+        out[0].id = -1;
         return out;
     }
     
-    // 10) Sort by probability descending
-    std::sort(cands.begin(), cands.end(), TokenCandidateGreater);
+    // Sort by probability descending
+    std::sort(cands.begin(), cands.end(), [](TokenCandidate& a, TokenCandidate& b) { return a.prob > b.prob; });
     
-    // 11) Truncate to max_candidates if requested
+    // Truncate to max_candidates if requested
     if (max_candidates > 0 && (int)cands.size() > max_candidates) {
         cands.resize((size_t)max_candidates);
     }
     
-    // 12) Optional re-normalization over the returned set
+    // Optional re-normalization over the returned set
     if (renormalize) {
         float sum = 0.0f;
         for (size_t i = 0; i < cands.size(); ++i) sum += cands[i].prob;
@@ -248,7 +238,7 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LauguageModel&
         }
     }
     
-    // 13) Fill cumulative probabilities in sorted order
+    // Fill cumulative probabilities in sorted order
     float running = 0.0f;
     for (size_t i = 0; i < cands.size(); ++i) {
         running += cands[i].prob;

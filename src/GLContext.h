@@ -49,4 +49,4 @@ private:
 #endif
 };
 
-#endif // GL_CONTEXT_H
+#endif

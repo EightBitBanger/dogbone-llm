@@ -1,4 +1,5 @@
 #include "main.h"
+#include <iostream>
 
 //#define RUN_UNIT_TESTS
 
@@ -20,9 +21,9 @@ int main() {
     const float target_loss     = 0.3f;                // End training at the target loss
     
     // sampling
-    const float temperature     = 0.8f;
-    const int   top_k           = 200;
-    const float top_p           = 0.7f;
+    const float temperature     = 1.3f;               
+    const int   top_k           = 80;                  // Keep only the k most likely tokens and drop the rest
+    const float top_p           = 1.0f;                // Keep the smallest set of tokens whose probabilities add up to p
     const int   context_size    = 64;                  // Number of tokens to 'remember'
     
     // attention
@@ -30,9 +31,9 @@ int main() {
     const int   d_head          = d_model / n_heads;   // d_model must be divisible by n_heads
     
     // Sentence structuring
-    const int tokenCountMax           = 80;            // Absolute max number of tokens to return as the response
-    const int wordsPerSentence        = 16;            // Max number of words per sentence
-    const int sentenceCountMax        = 4;             // Max number of sentences or strings of tokens broken by a period
+    const int tokenCountMax           = 1024;          // Absolute max number of tokens to return as the response
+    const int wordsPerSentence        = 24;            // Max number of words per sentence
+    const int sentenceCountMax        = 3;             // Max number of sentences or strings of tokens broken by a period
     
     const bool usingGraphicsAcceleration = true;      // Use the graphics card as a math accelerator/co-processor
     
@@ -50,6 +51,7 @@ int main() {
         return 1;
     }
     
+    Timer timer;
     uint64_t epoch;
     float avgLoss;
     float learnRate = lr;
@@ -72,6 +74,10 @@ int main() {
         trainer.UseGPU(&shader);
         trainer.EnableResidentWeights(true);
         trainer.BuildShaders();
+    } else {
+        SYSTEM_INFO sysinfo;
+        GetSystemInfo(&sysinfo);
+        std::cout << "Logical processors " << (int)sysinfo.dwNumberOfProcessors << " CPU ready...\n";
     }
     
 #ifdef RUN_UNIT_TESTS
@@ -95,11 +101,11 @@ int main() {
         std::cout << "Model package not found..." << "\n";
         
         if (usingGraphicsAcceleration) {
-            TrainModelGPU(trainingFilename, modelFilename, model, vocab, 
+            TrainModelGPU(trainingFilename, modelFilename, model, vocab, timer, 
                         d_model, n_heads, d_ff, n_layers, n_ctx, 
                         learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop, shader);
         } else {
-            TrainModelCPU(trainingFilename, modelFilename, model, vocab, 
+            TrainModelCPU(trainingFilename, modelFilename, model, vocab, timer, 
                         d_model, n_heads, d_ff, n_layers, n_ctx, 
                         learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop);
         }
@@ -117,7 +123,7 @@ int main() {
     // Fire up the sampler
     SamplingParams sampler;
     sampler.temperature       = temperature;
-    sampler.top_k             = std::min((int)vocab.id_to_word.size(), top_k);
+    sampler.top_k             = std::min((int)vocab.Size(), top_k);
     sampler.top_p             = top_p;
     sampler.presence_penalty  = 0.8f;   // 0.5 - 1.0  if you see loops/repeats
     sampler.frequency_penalty = 0.7f;   // 0.5 - 1.0  for stronger anti-repetition
@@ -154,11 +160,11 @@ int main() {
             // Kick off a learning cycle
             if (keyboard_string == "train" || keyboard_string == "learn") {
                 if (usingGraphicsAcceleration) {
-                    TrainModelGPU(trainingFilename, modelFilename, model, vocab, 
+                    TrainModelGPU(trainingFilename, modelFilename, model, vocab, timer, 
                                 d_model, n_heads, d_ff, n_layers, n_ctx, 
                                 learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop, shader);
                 } else {
-                    TrainModelCPU(trainingFilename, modelFilename, model, vocab, 
+                    TrainModelCPU(trainingFilename, modelFilename, model, vocab, timer, 
                                 d_model, n_heads, d_ff, n_layers, n_ctx, 
                                 learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop);
                 }
@@ -209,7 +215,7 @@ int main() {
                 std::cout << "attention heads    " << n_heads << "\n\n";
                 
                 std::cout << "Context window     " << context_size << "\n";
-                std::cout << "Vocabulary         " << vocab.id_to_word.size() << "\n";
+                std::cout << "Vocabulary         " << vocab.Size() << "\n";
                 
                 std::cout << "\n";
                 
@@ -223,7 +229,7 @@ int main() {
         // Encode user prompt
         ContextWindow userContextWindow(context_size);
         std::vector<Token>& userContext = userContextWindow.GetContext();
-        userContext = Encode(vocab, keyboard_string, true, false);
+        userContext = Encode(vocab, keyboard_string);
         for (unsigned int id=0; id < userContext.size(); id++) 
             context.Add( userContext[id] );
         
@@ -232,6 +238,29 @@ int main() {
         
         sentenceStruct.sentenceCounter = 0;
         sentenceStruct.wordsCounter = 0;
+        
+        // Sample until a word token is found to kick off the stream
+        bool found=false;
+        for (unsigned int retry = 0; retry < 4; retry++) {
+            // Prime the context with a beginning of sentence token
+            context.Add(vocab.token.bos_id);
+            std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, vocab.Size(), 0.0001f, true);
+            // Check candidates list for an appropriate token
+            for (unsigned int c=0; c < candidate.size(); c++) {
+                Token token = candidate[c].id;
+                std::string word = vocab[token];
+                if (semantic.is_wordish(word)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+        
+        // Check beginning token
+        if (!found) {
+            std::cout << "Error: stream did not produce tokens\n\n";
+        }
         
         // Kick off a response stream
         for (unsigned int tokenCount=0; tokenCount < tokenCountMax; tokenCount++) {
@@ -245,6 +274,7 @@ int main() {
                 break;
         }
         
+        printLn();
         std::cout << "\n\n";
     }
     return 0;
@@ -260,7 +290,7 @@ int main() {
 
 
 static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab,
+                          LauguageModel& model, Tokenizer& vocab, Timer& time,
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout,
@@ -297,8 +327,8 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
         std::cout << "Resuming training @ epoch " << (unsigned long long)currentEpoch << " (GPU)\n";
     } else {
         // Fresh start: build vocab and model
-        FitVocab(vocab, corpus);
-        model   = LauguageModel((int)vocab.id_to_word.size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
+        vocab.FitToCorpus(vocab, corpus);
+        model   = LauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
         trainer = NeuralNetwork(learningRate);
         trainer.UseGPU(&gpu);
         trainer.EnableResidentWeights(true);
@@ -380,9 +410,8 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
                 batchCount = 0;
             }
             
-            // Does not save
-            SaveModelPackage(modelFilename, model, vocab, trainer,
-                            (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
+            //SaveModelPackage(modelFilename, model, vocab, trainer,
+            //                (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
             
             // Allow user to abort
             if (KeyPressedNonBlocking()) {
@@ -415,7 +444,7 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
 
 
 static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab,
+                          LauguageModel& model, Tokenizer& vocab, Timer& time,
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout) {
@@ -439,7 +468,7 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
 
     // Optimizer state
     trainer = NeuralNetwork(learningRate);
-
+    
     bool resumed = LoadModelPackage(modelFilename, model, vocab, trainer,
                                     savedEpoch, restoredLearningRate, avgLoss);
 
@@ -449,8 +478,8 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
         std::cout << "Resuming training @ epoch " << (unsigned long long)currentEpoch << "\n";
     } else {
         // Fresh start: build vocab and model
-        FitVocab(vocab, corpus);
-        model   = LauguageModel((int)vocab.id_to_word.size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
+        vocab.FitToCorpus(vocab, corpus);
+        model   = LauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
         trainer = NeuralNetwork(learningRate);
         currentEpoch        = 0;
         currentLearningRate = learningRate;
@@ -472,8 +501,9 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
     
     // Determine logical processors
     int logicalProcs = 0;
-    SYSTEM_INFO si; GetSystemInfo(&si);
-    logicalProcs = (int)si.dwNumberOfProcessors;
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    logicalProcs = (int)sysinfo.dwNumberOfProcessors;
     if (logicalProcs <= 0) logicalProcs = 1;
     
     // Attempt to spread the threads across many cores
@@ -519,7 +549,7 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
                     // Stride work assignment across the micro-batch
                     for (size_t j = startIdx + (size_t)t; j < endIdx; j += (size_t)threadsUsed) {
                         // Training pass
-                        float sampleLoss = trainer.Step(model, inputSequences[j], targetTokens[j],
+                        float sampleLoss = localTrainer.Step(model, inputSequences[j], targetTokens[j],
                                                         vocab.token.pad_id, &threadGrads[(size_t)t], false);
                         
                         threadLoss[(size_t)t]        += sampleLoss;
@@ -588,8 +618,9 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
             std::cout << std::flush;
             
             // Save weights + vocab + optimizer + epoch/LR
-            SaveModelPackage(modelFilename, model, vocab, trainer,
-                            (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
+            if (time.check()) 
+                SaveModelPackage(modelFilename, model, vocab, trainer,
+                                (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
             
             // Allow user to abort
             if (KeyPressedNonBlocking()) {

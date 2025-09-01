@@ -1,21 +1,12 @@
-#include <iostream>
 #include "SemanticCoherence.h"
+#include "Print.h"
 
 SemanticCoherence semantic;
-
-
-
-void SemanticCoherence::EmitToken(std::string word) {
-    
-    std::cout << word;
-}
-
-
 
 bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
                                            ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct) {
     // Candidate shortlist
-    const int   kMaxCandidates = vocab.id_to_word.size();
+    const int   kMaxCandidates = vocab.Size();
     const float kMinProb       = 0.0001f;
     const bool  kRenormalize   = true;
     
@@ -24,16 +15,19 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     bool at_sentence_start = ctx_ids.empty();
     if (!at_sentence_start) {
         Token lastId = ctx_ids.back();
-        std::string lastWord = vocab.id_to_word[lastId];
+        std::string lastWord = vocab[lastId];
         at_sentence_start = semantic.is_end_punct(lastWord);
     }
     
-    // Sample next token
-    std::vector<TokenCandidate> candidate =
-        Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
+    // Sample list of next tokens
+    std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
+    
+    // Apply grammatical corrections
+    GrammaticalCongruence grammer(vocab.id_to_word);
+    grammer.Apply(candidate, context.GetContext(), /*lambda=*/8.0f, /*hard_select=*/false);
     
     Token token = candidate[0].id;
-    std::string word = vocab.id_to_word[token];
+    std::string word = vocab[token];
     
     // Avoid non word starting words
     if (current.Size() < 3 && !semantic.is_wordish(word)) {
@@ -41,7 +35,7 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
         // Check candidates
         for (unsigned int c=0; c < candidate.size(); c++) {
             token = candidate[c].id;
-            word = vocab.id_to_word[token];
+            word = vocab[token];
             
             if (semantic.is_wordish(word)) 
                 break;
@@ -63,8 +57,9 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     if (!ctx_ids.empty() && !is_tight_punct) {
         out.insert(0, " ");
     }
-    // Emit
-    EmitToken(out);
+    
+    // Emit the token
+    print(out);
     
     // Update contexts
     context.Add(token);
@@ -73,108 +68,17 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     // If we just closed a sentence, bump the counter and possibly stop
     if (semantic.is_end_punct(word)) {
         sentenceStruct.sentenceCounter++;
-        current.Clear(); // optional: reset per-sentence buffer
+        //current.Clear();
         
         if (sentenceStruct.sentenceCounter >= sentenceStruct.sentenceCountMax) {
-            // Completed the desired number of sentences — stop generation
             return false;
         }
     }
-    
-    // Keep generating
     return true;
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    /*
-    
-    
-    // Avoid starting with end punctuation
-    for (unsigned int i = 0; i < 4; ++i) {
-        if (!semantic.is_end_punct(word)) break;
-        candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
-        if (candidate.empty()) break;
-        token = candidate[0].id;
-        word  = vocab.id_to_word[token];
-    }
-    
-    // Determine start of a sentence
-    bool atSentenceStart = false;
-    const unsigned int contextSize = context.Size();
-    if (contextSize == 0) {
-        atSentenceStart = true;
-    } else {
-        std::string lastWord = vocab.id_to_word[context[contextSize - 1]];
-        if (semantic.is_end_punct(lastWord)) {
-            atSentenceStart = true;
-        } else if ((semantic.is_quote(lastWord) || semantic.is_closing_bracket(lastWord)) && contextSize >= 2) {
-            std::string prevWord = vocab.id_to_word[context[contextSize - 2]];
-            if (semantic.is_end_punct(prevWord)) atSentenceStart = true;
-        }
-    }
-    
-    // Capitalized sentence start
-    if (atSentenceStart && semantic.is_wordish(word)) {
-        sentenceStruct.sentenceCounter++;
-        
-        // Build capitalized surface form
-        std::string capWord = word;
-        capWord = semantic.capitalize(capWord);  // capitalizes first character in-place
-        
-        // If vocab contains a token for the capitalized form, and it’s in the shortlist, use it.
-        int capId = -1;
-        
-        std::string printed = word;
-        printed = semantic.capitalize(printed);
-        
-        if (semantic.is_end_punct(printed)) {
-            std::cout << printed;
-        } else {
-            std::cout << " " << printed;
-        }
-        
-    }
-    
-    // Spacing
-    if (semantic.is_end_punct(word)) {
-        std::cout << word;
-    } else {
-        std::cout << " " << word;
-    }
-    
-    // Word counter
-    sentenceStruct.wordsCounter++;
-    if (sentenceStruct.wordsCounter > sentenceStruct.wordsPerSentence) {
-        sentenceStruct.wordsCounter=0;
-        context.Add(token);
-        return true;
-    }
-    
-    // Sentence counter
-    if (sentenceStruct.sentenceCounter > sentenceStruct.sentenceCountMax) {
-        sentenceStruct.sentenceCounter=0;
-        sentenceStruct.wordsCounter=0;
-        context.Add(token);
-        return false;
-    }
-    
-    context.Add(token);
-    return true;
-    */
-    
-    
-    
-    
 }
 
 
-inline std::string SemanticCoherence::lower(std::string& s) {
+std::string SemanticCoherence::lower(std::string& s) {
     std::string out; 
     out.reserve(s.size());
     for (char c : s) {
@@ -183,7 +87,7 @@ inline std::string SemanticCoherence::lower(std::string& s) {
     return out;
 }
 
-inline std::string SemanticCoherence::capitalize(std::string& s) {
+std::string SemanticCoherence::capitalize(std::string& s) {
     std::string out;
     out.reserve(s.size());
 
@@ -203,7 +107,7 @@ inline std::string SemanticCoherence::capitalize(std::string& s) {
     return out;
 }
 
-inline bool SemanticCoherence::is_alpha(std::string& s) {
+bool SemanticCoherence::is_alpha(std::string& s) {
     if (s.empty()) return false;
     for (char c : s) {
         if (!std::isalpha((unsigned char)c)) return false;
@@ -211,41 +115,41 @@ inline bool SemanticCoherence::is_alpha(std::string& s) {
     return true;
 }
 
-inline bool SemanticCoherence::is_capitalized(std::string& s) {
+bool SemanticCoherence::is_capitalized(std::string& s) {
     return !s.empty() && std::isupper((unsigned char)s[0]);
 }
 
-inline bool SemanticCoherence::is_punct(std::string& s) {
+bool SemanticCoherence::is_punct(std::string& s) {
     static const std::unordered_set<std::string> P = {
         ".", ",", ";", ":", "!", "?", "\"", "'", "(", ")", "[", "]", "{", "}", "-", "—", "…"
     };
     return P.count(s) > 0;
 }
 
-inline bool SemanticCoherence::is_plain_punct(std::string& s) {
+bool SemanticCoherence::is_plain_punct(std::string& s) {
     // Punctuation that usually doesn't start a sentence
     static const std::unordered_set<std::string> P = {",", ";", ":", ")", "]", "}", "-", "—"};
     return P.count(s) > 0;
 }
 
-inline bool SemanticCoherence::is_end_punct(std::string& s) {
+bool SemanticCoherence::is_end_punct(std::string& s) {
     static const std::unordered_set<std::string> P = {".", "!", "?"};
     return P.count(s) > 0;
 }
 
-inline bool SemanticCoherence::starts_with_vowel_sound(std::string& s) {
+bool SemanticCoherence::starts_with_vowel_sound(std::string& s) {
     // Heuristic: a/an rule (cheap)
     if (s.empty()) return false;
     char c = (char)std::tolower((unsigned char)s[0]);
     return (c=='a'||c=='e'||c=='i'||c=='o'||c=='u');
 }
 
-inline bool SemanticCoherence::is_article(std::string& w) {
+bool SemanticCoherence::is_article(std::string& w) {
     static const std::unordered_set<std::string> S = {"a","an","the"};
     return S.count(w) > 0;
 }
 
-inline bool SemanticCoherence::is_preposition(std::string& w) {
+bool SemanticCoherence::is_preposition(std::string& w) {
     static const std::unordered_set<std::string> S = {
         "of","to","in","for","on","with","at","by","from","about","as","into",
         "like","through","after","over","between","out","against","during",
@@ -254,7 +158,7 @@ inline bool SemanticCoherence::is_preposition(std::string& w) {
     return S.count(w) > 0;
 }
 
-inline bool SemanticCoherence::is_conjunction(std::string& w) {
+bool SemanticCoherence::is_conjunction(std::string& w) {
     static const std::unordered_set<std::string> S = {
         "and","but","or","nor","for","so","yet", "because","although","though",
         "since","while", "if","unless","whereas"
@@ -262,7 +166,7 @@ inline bool SemanticCoherence::is_conjunction(std::string& w) {
     return S.count(w) > 0;
 }
 
-inline bool SemanticCoherence::is_pronoun(std::string& w) {
+bool SemanticCoherence::is_pronoun(std::string& w) {
     static const std::unordered_set<std::string> S = {
         "i","you","he","she","it","we","they","me","him","her","us","them","this",
         "that","these","those"
@@ -270,7 +174,7 @@ inline bool SemanticCoherence::is_pronoun(std::string& w) {
     return S.count(w) > 0;
 }
 
-inline bool SemanticCoherence::is_aux_verb(std::string& w) {
+bool SemanticCoherence::is_aux_verb(std::string& w) {
     static const std::unordered_set<std::string> S = {
         "am","is","are","was","were","be","been","being",
         "do","does","did",
@@ -280,7 +184,7 @@ inline bool SemanticCoherence::is_aux_verb(std::string& w) {
     return S.count(w) > 0;
 }
 
-inline bool SemanticCoherence::is_wordish(std::string& t) {
+bool SemanticCoherence::is_wordish(std::string& t) {
     if (t.empty()) return false;
 
     bool has_alpha = false;
@@ -296,7 +200,7 @@ inline bool SemanticCoherence::is_wordish(std::string& t) {
 }
 
 // Quote tokens (handles ASCII, PTB-style ``/'' and common Unicode quotes)
-inline bool SemanticCoherence::is_quote(std::string& t) {
+bool SemanticCoherence::is_quote(std::string& t) {
     static const std::unordered_set<std::string> Q = {
         "\"", "'", "``", "''", "`",
         "“", "”", "‘", "’",
@@ -306,14 +210,14 @@ inline bool SemanticCoherence::is_quote(std::string& t) {
 }
 
 // Closing brackets you'd attach punctuation to
-inline bool SemanticCoherence::is_closing_bracket(std::string& t) {
+bool SemanticCoherence::is_closing_bracket(std::string& t) {
     static const std::unordered_set<std::string> C = {
         ")", "]", "}", "»"
     };
     return C.count(t) > 0;
 }
 
-inline bool SemanticCoherence::appeared_recently(std::vector<std::string>& ctx, std::string& nextLower, int lastN) {
+bool SemanticCoherence::appeared_recently(std::vector<std::string>& ctx, std::string& nextLower, int lastN) {
     int count = 0;
     for (int i = (int)ctx.size() - 1; i >= 0 && count < lastN; --i, ++count) {
         if (lower(ctx[(size_t)i]) == nextLower) return true;
@@ -321,7 +225,7 @@ inline bool SemanticCoherence::appeared_recently(std::vector<std::string>& ctx, 
     return false;
 }
 
-inline int SemanticCoherence::count_unclosed(std::vector<std::string>& ctx, std::string& opener, std::string& closer) {
+int SemanticCoherence::count_unclosed(std::vector<std::string>& ctx, std::string& opener, std::string& closer) {
     int open = 0;
     for (const auto& w : ctx) {
         if (w == opener) ++open;
@@ -330,7 +234,7 @@ inline int SemanticCoherence::count_unclosed(std::vector<std::string>& ctx, std:
     return open;
 }
 
-inline int SemanticCoherence::count_unclosed_pair(std::vector<std::string>& ctx, std::string& opener, std::string& closer) {
+int SemanticCoherence::count_unclosed_pair(std::vector<std::string>& ctx, std::string& opener, std::string& closer) {
     int open = 0;
     for (const auto& w : ctx) {
         if (w == opener) ++open;
@@ -339,7 +243,7 @@ inline int SemanticCoherence::count_unclosed_pair(std::vector<std::string>& ctx,
     return open;
 }
 
-inline bool SemanticCoherence::is_special(int id, Tokenizer& vocab) {
+bool SemanticCoherence::is_special(int id, Tokenizer& vocab) {
     return id == vocab.token.eos_id || 
            id == vocab.token.bos_id || 
            id == vocab.token.pad_id || 
@@ -348,7 +252,7 @@ inline bool SemanticCoherence::is_special(int id, Tokenizer& vocab) {
            id == vocab.token.response_id;
 }
 
-inline std::string SemanticCoherence::safe_word(Tokenizer& vocab, int id) {
-    if (id < 0 || id >= (int)vocab.id_to_word.size()) return "";
-    return vocab.id_to_word[(size_t)id];
+std::string SemanticCoherence::safe_word(Tokenizer& vocab, int id) {
+    if (id < 0 || id >= (int)vocab.Size()) return "";
+    return vocab[(size_t)id];
 }

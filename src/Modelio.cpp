@@ -78,7 +78,7 @@ bool SaveVocabBinaryToStream(const Tokenizer& vocab, std::ostream& out) {
     const uint32_t version = 1u;
     if (!StreamWriteLE32(out, version)) return false;
 
-    const uint32_t count = (uint32_t)vocab.id_to_word.size();
+    const uint32_t count = (uint32_t)vocab.Size();
     if (!StreamWriteLE32(out, count)) return false;
 
     if (!StreamWriteLE32(out, (uint32_t)vocab.token.pad_id)) return false;
@@ -88,8 +88,8 @@ bool SaveVocabBinaryToStream(const Tokenizer& vocab, std::ostream& out) {
     if (!StreamWriteLE32(out, (uint32_t)vocab.token.query_id)) return false;
     if (!StreamWriteLE32(out, (uint32_t)vocab.token.response_id)) return false;
 
-    for (size_t i = 0; i < vocab.id_to_word.size(); ++i) {
-        const std::string& tok = vocab.id_to_word[i];
+    for (size_t i = 0; i < vocab.Size(); ++i) {
+        const std::string& tok = vocab[i];
         const uint32_t len = (uint32_t)tok.size();
         if (!StreamWriteLE32(out, len)) return false;
         if (len > 0) {
@@ -121,10 +121,9 @@ bool LoadVocabBinaryFromStream(Tokenizer& vocab, std::istream& in) {
     if (!StreamReadLE32(in, qry_u)) return false;
     if (!StreamReadLE32(in, rsp_u)) return false;
 
-    vocab.word_to_id.clear();
-    vocab.id_to_word.clear();
-    vocab.id_to_word.reserve(count);
-
+    vocab.Clear();
+    vocab.Reserve(count);
+    
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t len = 0u;
         if (!StreamReadLE32(in, len)) return false;

@@ -83,6 +83,70 @@ static bool gpu_linear_forward_resident(ShaderTensor* gpu, const Tensor2D& X, in
     }
     return true;
 }
+
+// GPU attention apply: use P on GPU and multiply by V per head, no P readback.
+static bool gpu_attention_apply_no_readback(ShaderTensor* gpu,
+                                            const Tensor2D& V,
+                                            int T, int H, int DH,
+                                            Tensor2D& Y_concat) {
+    if (!gpu) return false;
+    const int D = H * DH;
+    std::ptrdiff_t bytesPtotal = (std::ptrdiff_t)H * T * T * sizeof(float);
+    std::ptrdiff_t bytesX = (std::ptrdiff_t)T * T * sizeof(float);
+    std::ptrdiff_t bytesW = (std::ptrdiff_t)T * DH * sizeof(float);
+    std::ptrdiff_t bytesYh = (std::ptrdiff_t)T * DH * sizeof(float);
+
+    unsigned pid = gpu->ensureSSBO("P", bytesPtotal, 3);
+    if (!pid) return false;
+
+    gpu->ensureSSBO("X", bytesX, 0);
+    gpu->ensureSSBO("W", bytesW, 1);
+    gpu->ensureSSBO("B", (std::ptrdiff_t)DH * sizeof(float), 2);
+    gpu->ensureSSBO("Y", bytesYh, 3);
+    gpu->ensureSSBO("Meta", (std::ptrdiff_t)sizeof(int) * 3, 4);
+
+    std::vector<float> zeros((size_t)DH, 0.0f);
+    gpu->upload("B", zeros.data(), (std::ptrdiff_t)DH * sizeof(float));
+
+    Y_concat = Tensor2D(T, D);
+
+    for (int h = 0; h < H; ++h) {
+        unsigned xid = gpu->ensureSSBO("X", bytesX, 0);
+        // copy P_h -> X on GPU
+        glBindBuffer(GL_COPY_READ_BUFFER, pid);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, xid);
+        GLintptr srcOff = (GLintptr)((std::ptrdiff_t)h * bytesX);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, srcOff, 0, bytesX);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+
+        // upload V slice as W_h
+        Tensor2D W_h(T, DH);
+        for (int r = 0; r < T; ++r) {
+            const float* src = &V.data[(size_t)r * D + (size_t)h * DH];
+            std::memcpy(W_h.Row(r), src, (size_t)DH * sizeof(float));
+        }
+        gpu->upload("W", W_h.data.data(), bytesW);
+
+        int meta[3] = { T, T, DH };
+        gpu->upload("Meta", meta, (std::ptrdiff_t)sizeof(meta));
+
+        unsigned gx = (unsigned)((DH + 15) / 16);
+        unsigned gy = (unsigned)((T  + 15) / 16);
+        gpu->useNamed("matmul");
+        gpu->dispatch(gx, gy, 1);
+        gpu->sync();
+
+        std::vector<float> hostYh((size_t)T * (size_t)DH);
+        gpu->downloadSync("Y", hostYh.data(), bytesYh);
+        for (int t = 0; t < T; ++t) {
+            std::memcpy(&Y_concat.data[(size_t)t * D + (size_t)h * DH],
+                        hostYh.data() + (size_t)t * DH,
+                        (size_t)DH * sizeof(float));
+        }
+    }
+    return true;
+}
 void NeuralNetwork::InitScratch(int max_T) {
     attnScratch_p.resize((size_t)max_T);
     attnScratch_gs.resize((size_t)max_T);
@@ -250,31 +314,51 @@ float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, 
             }
         } else {
             const int T = C.n1.R;
-            for (int h = 0; h < B.attn.n_heads; ++h) {
-                Tensor2D P_h(T, T);
-                for (int t = 0; t < T; ++t) {
-                    std::memcpy(P_h.Row(t), Pht.Row(h*T + t), (size_t)T * sizeof(float));
-                }
-                Tensor2D W_h(T, B.attn.d_head);
-                for (int r=0; r<T; ++r) {
-                    std::memcpy(W_h.Row(r), &C.V.data[(size_t)r * C.V.C + (size_t)h * B.attn.d_head],
-                                (size_t)B.attn.d_head * sizeof(float));
-                }
-                LinearLayer Ltmp;
-                Ltmp.W = W_h;
-                Ltmp.b.assign((size_t)B.attn.d_head, 0.0f);
-                Tensor2D Y_h;
-                bool ok = false;
-                if (mGpu) ok = gpu_linear_forward(mGpu, P_h, Ltmp, Y_h);
-                if (!ok) Y_h = Ltmp.Forward(P_h);
-                for (int t=0; t<T; ++t) {
-                    std::memcpy(&C.attn_concat.data[(size_t)t * C.attn_concat.C + (size_t)h * B.attn.d_head],
-                                Y_h.Row(t), (size_t)B.attn.d_head * sizeof(float));
+            Tensor2D Ycat;
+            if (gpu_attention_apply_no_readback(mGpu, C.V, T, B.attn.n_heads, B.attn.d_head, Ycat)) {
+                C.attn_concat = std::move(Ycat);
+            } else {
+                // fallback to cpu attention if gpu path fails
+                float scale = 1.0f / std::sqrt((float)B.attn.d_head);
+                for (int h = 0; h < B.attn.n_heads; h++) {
+                    int off = h * B.attn.d_head;
+                    for (int t = 0; t < C.n1.R; t++) {
+                        float maxlogit = -std::numeric_limits<float>::infinity();
+                        for (int u = 0; u <= t; u++) {
+                            float dot = 0.0f;
+                            const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                            const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                            for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                            float logit = dot * scale;
+                            if (logit > maxlogit) maxlogit = logit;
+                        }
+                        float denom = 0.0f;
+                        std::vector<float> w((size_t)t + 1, 0.0f);
+                        for (int u = 0; u <= t; u++) {
+                            float dot = 0.0f;
+                            const float* q = &C.Q.data[(size_t)t * C.Q.C + off];
+                            const float* k = &C.K.data[(size_t)u * C.K.C + off];
+                            for (int c = 0; c < B.attn.d_head; c++) dot += q[c] * k[c];
+                            float logit = dot * scale;
+                            float e = std::exp(logit - maxlogit);
+                            w[(size_t)u] = e;
+                            denom += e;
+                        }
+                        float invden = 1.0f / denom;
+                        float* out_row = C.attn_concat.Row(t);
+                        for (int u = 0; u <= t; u++) {
+                            float ww = w[(size_t)u] * invden;
+                            const float* v = &C.V.data[(size_t)u * C.V.C + off];
+                            for (int c = 0; c < B.attn.d_head; c++) {
+                                out_row[off + c] += ww * v[c];
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        
+
         // mix heads and add residual
         C.attn_out = B.attn.Wo.Forward(C.attn_concat); // output projection to merge heads
         C.x_attn_res = C.x_in;
@@ -602,7 +686,7 @@ float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& input
                 // Bind resident buffers to expected bindings (1=W, 2=B)
                 mGpu->adoptSSBO("W", wb.w, wb.wBytes, 1);
                 mGpu->adoptSSBO("B", wb.b, wb.bBytes, 2);
-                if (gpu_linear_forward_resident(mGpu, Xin, wb.IN, wb.OUT, Y)) {
+                if (gpu_linear_forward_resident(mGpu, Xin, wb.IN_, wb.OUT_, Y)) {
                     return Y;
                 }
             }
@@ -1138,7 +1222,7 @@ static void UploadOneLinear(ShaderTensor* gpu, const LinearLayer& L,
     unsigned wid = gpu->createSSBO(wName, wBytes, 99, 0, L.W.data.data());
     unsigned bid = gpu->createSSBO(bName, bBytes, 99, 0, L.b.data());
 
-    out.w = wid; out.b = bid; out.wBytes = wBytes; out.bBytes = bBytes; out.IN = IN; out.OUT = OUT;
+    out.w = wid; out.b = bid; out.wBytes = wBytes; out.bBytes = bBytes; out.IN_ = IN; out.OUT_ = OUT;
 }
 
 
@@ -1228,7 +1312,7 @@ bool NeuralNetwork::LinearForwardGPU_Batched(const LinearLayer& L,
                 // Bind resident buffers to expected bindings (1=W, 2=B)
                 mGpu->adoptSSBO("W", wb.w, wb.wBytes, 1);
                 mGpu->adoptSSBO("B", wb.b, wb.bBytes, 2);
-                if (gpu_linear_forward_resident(mGpu, Xbig, wb.IN, wb.OUT, Ybig)) {
+                if (gpu_linear_forward_resident(mGpu, Xbig, wb.IN_, wb.OUT_, Ybig)) {
                     usedGPU = true;
                 }
             }
