@@ -34,7 +34,7 @@ int main() {
     const int wordsPerSentence        = 16;            // Max number of words per sentence
     const int sentenceCountMax        = 4;             // Max number of sentences or strings of tokens broken by a period
     
-    const bool usingGraphicsAcceleration = false;      // Use the graphics card as a math accelerator/co-processor
+    const bool usingGraphicsAcceleration = true;      // Use the graphics card as a math accelerator/co-processor
     
     
     if (n_ctx < 1) {
