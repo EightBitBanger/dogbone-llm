@@ -12,14 +12,10 @@ void SemanticCoherence::EmitToken(std::string word) {
 
 
 
-bool SemanticCoherence::ProcessTokenStream(LauguageModel& model,
-                                           Vocabulary& vocab,
-                                           SamplingParams& sampler,
-                                           ContextWindow& context,
-                                           ContextWindow& current,
-                                           SentenceStructure& sentenceStruct) {
+bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
+                                           ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct) {
     // Candidate shortlist
-    const int   kMaxCandidates = vocab.Size();
+    const int   kMaxCandidates = vocab.id_to_word.size();
     const float kMinProb       = 0.0001f;
     const bool  kRenormalize   = true;
     
@@ -343,17 +339,16 @@ inline int SemanticCoherence::count_unclosed_pair(std::vector<std::string>& ctx,
     return open;
 }
 
-inline bool SemanticCoherence::is_special(int id, Vocabulary& vocab) {
-    return id == vocab.eos_id || id == vocab.bos_id ||
-           id == vocab.pad_id || id == vocab.unk_id;
+inline bool SemanticCoherence::is_special(int id, Tokenizer& vocab) {
+    return id == vocab.token.eos_id || 
+           id == vocab.token.bos_id || 
+           id == vocab.token.pad_id || 
+           id == vocab.token.unk_id || 
+           id == vocab.token.query_id || 
+           id == vocab.token.response_id;
 }
 
-inline int SemanticCoherence::sanitize_special(int id, Vocabulary& vocab) {
-    if (is_special(id, vocab)) return vocab.pad_id;
-    return id;
-}
-
-inline std::string SemanticCoherence::safe_word(Vocabulary& vocab, int id) {
+inline std::string SemanticCoherence::safe_word(Tokenizer& vocab, int id) {
     if (id < 0 || id >= (int)vocab.id_to_word.size()) return "";
     return vocab.id_to_word[(size_t)id];
 }

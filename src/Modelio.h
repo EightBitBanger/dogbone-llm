@@ -48,8 +48,8 @@ inline bool ReadModelDims(std::istream& in, ModelDims& d);
 inline bool StreamWriteLE64(std::ostream& out, uint64_t v);
 inline bool StreamReadLE64(std::istream& in, uint64_t& v);
 
-bool SaveVocabBinaryToStream(const Vocabulary& vocab, std::ostream& out);
-bool LoadVocabBinaryFromStream(Vocabulary& vocab, std::istream& in);
+bool SaveVocabBinaryToStream(const Tokenizer& vocab, std::ostream& out);
+bool LoadVocabBinaryFromStream(Tokenizer& vocab, std::istream& in);
 
 // Optimizer state save/load
 void EnsureAdamSize(AdamState& s, size_t n);
@@ -61,12 +61,12 @@ bool WriteAdamState(std::ostream& out, const AdamState& s, size_t expected_len);
 bool ReadAdamState(std::istream& in, AdamState& s, size_t expected_len);
 
 // Save model + vocab + optimizer state into a single package.
-bool SaveModelPackage(const std::string& path, const LauguageModel& model, const Vocabulary& vocab,
+bool SaveModelPackage(const std::string& path, const LauguageModel& model, const Tokenizer& vocab,
                       const NeuralNetwork& trainer, uint64_t epoch, float current_lr, float last_avg_loss);
 
 // Load model + vocab + optimizer if present.
 // Returns true on success. If OPTS missing, model+vocab still loaded and trainer remains default.
-bool LoadModelPackage(const std::string& path, LauguageModel& model, Vocabulary& vocab, NeuralNetwork& trainer, 
+bool LoadModelPackage(const std::string& path, LauguageModel& model, Tokenizer& vocab, NeuralNetwork& trainer, 
                       uint64_t& epoch_out, float& current_lr_out, float& last_loss_out);
 
 // Persist-only LR update: loads package, updates trainer.opt.lr, re-saves package.

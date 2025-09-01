@@ -28,7 +28,7 @@ class SemanticCoherence {
 public:
     
     // Sample a token context stream through a model via a given vocabulary and sentence structure.
-    bool ProcessTokenStream(LauguageModel& model, Vocabulary& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
+    bool ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
     
     // Print a token to the stream.
     void EmitToken(std::string word);
@@ -60,9 +60,8 @@ private:
     inline int count_unclosed_pair(std::vector<std::string>& ctx, std::string& opener, std::string& closer);
     inline bool starts_with_vowel_sound(std::string& s);
     inline bool appeared_recently(std::vector<std::string>& ctx, std::string& nextLower, int lastN);
-    inline bool is_special(int id, Vocabulary& vocab);
-    inline int sanitize_special(int id, Vocabulary& vocab);
-    inline std::string safe_word(Vocabulary& vocab, int id);
+    inline bool is_special(int id, Tokenizer& vocab);
+    inline std::string safe_word(Tokenizer& vocab, int id);
     
 };
 

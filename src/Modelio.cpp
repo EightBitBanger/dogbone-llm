@@ -70,7 +70,7 @@ inline bool StreamReadLE64(std::istream& in, uint64_t& v) {
     return true;
 }
 
-bool SaveVocabBinaryToStream(const Vocabulary& vocab, std::ostream& out) {
+bool SaveVocabBinaryToStream(const Tokenizer& vocab, std::ostream& out) {
     const char magic[4] = { 'V','O','C','B' };
     out.write(magic, 4);
     if (!out.good()) return false;
@@ -81,10 +81,12 @@ bool SaveVocabBinaryToStream(const Vocabulary& vocab, std::ostream& out) {
     const uint32_t count = (uint32_t)vocab.id_to_word.size();
     if (!StreamWriteLE32(out, count)) return false;
 
-    if (!StreamWriteLE32(out, (uint32_t)vocab.pad_id)) return false;
-    if (!StreamWriteLE32(out, (uint32_t)vocab.unk_id)) return false;
-    if (!StreamWriteLE32(out, (uint32_t)vocab.bos_id)) return false;
-    if (!StreamWriteLE32(out, (uint32_t)vocab.eos_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.pad_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.unk_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.bos_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.eos_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.query_id)) return false;
+    if (!StreamWriteLE32(out, (uint32_t)vocab.token.response_id)) return false;
 
     for (size_t i = 0; i < vocab.id_to_word.size(); ++i) {
         const std::string& tok = vocab.id_to_word[i];
@@ -98,7 +100,7 @@ bool SaveVocabBinaryToStream(const Vocabulary& vocab, std::ostream& out) {
     return out.good();
 }
 
-bool LoadVocabBinaryFromStream(Vocabulary& vocab, std::istream& in) {
+bool LoadVocabBinaryFromStream(Tokenizer& vocab, std::istream& in) {
     char magic[4] = {0,0,0,0};
     in.read(magic, 4);
     if (!in.good()) return false;
@@ -111,11 +113,13 @@ bool LoadVocabBinaryFromStream(Vocabulary& vocab, std::istream& in) {
     uint32_t count = 0u;
     if (!StreamReadLE32(in, count)) return false;
 
-    uint32_t pad_u=0, unk_u=0, bos_u=0, eos_u=0;
+    uint32_t pad_u=0, unk_u=0, bos_u=0, eos_u=0, qry_u=0, rsp_u=0;
     if (!StreamReadLE32(in, pad_u)) return false;
     if (!StreamReadLE32(in, unk_u)) return false;
     if (!StreamReadLE32(in, bos_u)) return false;
     if (!StreamReadLE32(in, eos_u)) return false;
+    if (!StreamReadLE32(in, qry_u)) return false;
+    if (!StreamReadLE32(in, rsp_u)) return false;
 
     vocab.word_to_id.clear();
     vocab.id_to_word.clear();
@@ -136,10 +140,12 @@ bool LoadVocabBinaryFromStream(Vocabulary& vocab, std::istream& in) {
         vocab.word_to_id[tok] = (int)i;
     }
 
-    vocab.pad_id = (int32_t)pad_u;
-    vocab.unk_id = (int32_t)unk_u;
-    vocab.bos_id = (int32_t)bos_u;
-    vocab.eos_id = (int32_t)eos_u;
+    vocab.token.pad_id = (int32_t)pad_u;
+    vocab.token.unk_id = (int32_t)unk_u;
+    vocab.token.bos_id = (int32_t)bos_u;
+    vocab.token.eos_id = (int32_t)eos_u;
+    vocab.token.query_id    = (int32_t)qry_u;
+    vocab.token.response_id = (int32_t)rsp_u;
     return true;
 }
 
@@ -183,7 +189,7 @@ bool ReadAdamState(std::istream& in, AdamState& s, size_t expected_len) {
 // Save model + vocab + optimizer state into a single package.
 bool SaveModelPackage(const std::string& path,
                              const LauguageModel& model,
-                             const Vocabulary& vocab,
+                             const Tokenizer& vocab,
                              const NeuralNetwork& trainer,
                              uint64_t epoch,
                              float current_lr,
@@ -253,11 +259,11 @@ bool SaveModelPackage(const std::string& path,
         if (!StreamWriteLE32(out, opt_version)) return false;
     
         // Adam hyperparams + step + epoch + avg loss
-        out.write((const char*)&trainer.opt.lr,    sizeof(float));
-        out.write((const char*)&trainer.opt.beta1, sizeof(float));
-        out.write((const char*)&trainer.opt.beta2, sizeof(float));
-        out.write((const char*)&trainer.opt.eps,   sizeof(float));
-        int32_t t_i32 = trainer.opt.t;
+        out.write((const char*)&trainer.opt.learning_rate,    sizeof(float));
+        out.write((const char*)&trainer.opt.beta_m, sizeof(float));
+        out.write((const char*)&trainer.opt.beta_v, sizeof(float));
+        out.write((const char*)&trainer.opt.epsilon,   sizeof(float));
+        int32_t t_i32 = trainer.opt.step;
         out.write((const char*)&t_i32, sizeof(int32_t));
         out.write((const char*)&epoch, sizeof(uint64_t));
         out.write((const char*)&last_avg_loss, sizeof(float));
@@ -335,7 +341,7 @@ bool SaveModelPackage(const std::string& path,
 
 // Load model + vocab + optimizer if present.
 // Returns true on success. If OPTS missing, model+vocab still loaded and trainer remains default.
-bool LoadModelPackage(const std::string& path, LauguageModel& model, Vocabulary& vocab, NeuralNetwork& trainer,
+bool LoadModelPackage(const std::string& path, LauguageModel& model, Tokenizer& vocab, NeuralNetwork& trainer,
                              uint64_t& epoch_out, float& current_lr_out, float& last_loss_out) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in.is_open()) return false;
@@ -383,8 +389,8 @@ bool LoadModelPackage(const std::string& path, LauguageModel& model, Vocabulary&
     // OPTS (optional)
     epoch_out = 0ull;
     float last_loss = -1.0f;
-    
-    current_lr_out = trainer.opt.lr; // default to whatever caller set
+
+    current_lr_out = trainer.opt.learning_rate;
 
     if (secOPTS) {
         in.seekg((std::streamoff)secOPTS->offset, std::ios::beg);
@@ -406,11 +412,11 @@ bool LoadModelPackage(const std::string& path, LauguageModel& model, Vocabulary&
 
         if (!in.good()) return false;
 
-        trainer.opt.lr = lr;
-        trainer.opt.beta1 = b1;
-        trainer.opt.beta2 = b2;
-        trainer.opt.eps = eps;
-        trainer.opt.t = t_i32;
+        trainer.opt.learning_rate = lr;
+        trainer.opt.beta_m = b1;
+        trainer.opt.beta_v = b2;
+        trainer.opt.epsilon = eps;
+        trainer.opt.step = t_i32;
         epoch_out = epoch;
         current_lr_out = lr;
         last_loss_out = last_loss;
@@ -454,7 +460,7 @@ bool LoadModelPackage(const std::string& path, LauguageModel& model, Vocabulary&
 bool UpdateModelLROnDisk(const std::string& modelPath, float newLR,
                                 uint64_t* outEpoch, float* outOldLR) {
     LauguageModel  m;
-    Vocabulary     v;
+    Tokenizer     v;
     // seed trainer with something; loader will overwrite states
     NeuralNetwork    t(newLR);
 
@@ -464,7 +470,7 @@ bool UpdateModelLROnDisk(const std::string& modelPath, float newLR,
 
     if (!LoadModelPackage(modelPath, m, v, t, epoch, oldLR, avgLoss)) return false;
 
-    t.opt.lr = newLR; // change only LR
+    t.opt.learning_rate = newLR; // change only LR
     bool ok = SaveModelPackage(modelPath, m, v, t, epoch, newLR, avgLoss);
 
     if (ok) {

@@ -29,6 +29,7 @@
 #include "SemanticCoherence.h"
 #include "ContextWindow.h"
 #include "Transformer/Transformer.h"
+#include "Tests/test.h"
 
 #include <windows.h>
 
@@ -37,15 +38,15 @@ static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v
 
 
 static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Vocabulary& vocab,
-                          int layerWidth, int headCount, int feedWidth, int layerDepth,
-                          int contextSize, float learningRate, float learningRateMin, 
-                          float learningRateDecay, float& avgLoss, float lossDropout);
+                          LauguageModel& model, Tokenizer& vocab,
+                          int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
+                          float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
+                          float& avgLoss, float lossDropout);
 
 static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Vocabulary& vocab,
+                          LauguageModel& model, Tokenizer& vocab,
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
-                          float learningRate, float learningRateMin, float learningRateDecay, 
+                          float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout,
                           ShaderTensor& gpu);
 
@@ -92,7 +93,7 @@ bool is_wordish(const std::string& s) {
 // Build fixed-length (inputs, targets) pairs for next-token training from raw text lines.
 // Each line is tokenized with optional BOS/EOS and then split into blocks of length <= block_len.
 // Overlap is controlled by `stride` (e.g., stride=32 with block_len=128).
-static void BuildNextTokenDataset(const Vocabulary& vocab,
+static void BuildNextTokenDataset(const Tokenizer& vocab,
                                   const std::vector<std::string>& corpus,
                                   std::vector<std::vector<int>>& inputs,
                                   std::vector<std::vector<int>>& targets,

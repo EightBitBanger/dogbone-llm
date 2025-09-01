@@ -102,7 +102,7 @@ bool GLContext::init() {
     if (!createModernOrFallbackContext()) return false;
     ShowWindow(hWnd_, SW_HIDE);
     const GLubyte* ver = glGetString(GL_VERSION);
-    std::cout << "OpenGL ready: " << (ver ? reinterpret_cast<const char*>(ver) : "unknown") << "\n";
+    std::cout << "OpenGL " << (ver ? reinterpret_cast<const char*>(ver) : "unknown") << "\n";
     return true;
 }
 
