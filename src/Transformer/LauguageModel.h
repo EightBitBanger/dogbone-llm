@@ -15,11 +15,11 @@ class LauguageModel {
 public:
     
     int vocab_size;
+    int n_ctx;
     int d_model;
     int n_heads;
     int d_ff;
     int n_layers;
-    int max_T;
     
     Embedding tok;
     PositionalEncoding pos;
@@ -27,7 +27,7 @@ public:
     LinearLayer lm_head; // d_model -> vocab_size
     
     LauguageModel();
-    LauguageModel(int vocab, int dmodel, int heads, int ff, int layers_count, int maxT);
+    LauguageModel(int vocab, int dmodel, int heads, int ff, int layers_count, int ctx);
     
     Tensor2D Forward(const std::vector<int>& ids) const;
     Tensor2D Forward(const std::vector<int>& ids, float* scratch) const;

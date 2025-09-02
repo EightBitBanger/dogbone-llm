@@ -1,5 +1,5 @@
 #include "SemanticCoherence.h"
-#include "Print.h"
+#include "Utils/Print.h"
 
 #include <iostream>
 
@@ -28,6 +28,8 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     std::string word = vocab[token];
     
     /*
+    // TESTING - dump candidate list
+    
     for (unsigned int i=0; i < candidate.size(); i++) {
         Token tokenID = candidate[i].id;
         std::string word = vocab[ tokenID ];

@@ -239,7 +239,7 @@ bool SaveModelPackage(const std::string& path,
         dims.n_heads    = model.n_heads;
         dims.d_ff       = model.d_ff;
         dims.n_layers   = model.n_layers;
-        dims.max_T      = model.max_T;
+        dims.max_T      = model.n_ctx;
         if (!WriteModelDims(out, dims)) return false;
     }
     entries[1].size = (uint64_t)((uint64_t)out.tellp() - entries[1].offset);

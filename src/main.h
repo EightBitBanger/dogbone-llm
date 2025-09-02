@@ -21,8 +21,8 @@
 #include <ctime>
 #include <cfloat>
 
-#include "Timer.h"
-#include "Print.h"
+#include "Utils/Timer.h"
+#include "Utils/Print.h"
 #include "GLContext.h"
 
 #include "Tokenizer.h"
@@ -45,18 +45,15 @@ template<typename T>
 static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v)); }
 
 
-static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab, Timer& time, 
+static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, LauguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout);
 
-static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab, Timer& time, 
+static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, LauguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
-                          float& avgLoss, float lossDropout,
-                          ShaderTensor& gpu);
+                          float& avgLoss, float lossDropout, ShaderTensor& gpu);
 
 NeuralNetwork trainer(0.001f);
 
@@ -89,6 +86,35 @@ void WindowResizePx(int width, int height) {
 
 SizePx DisplayGetSize() {
     return { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+}
+
+
+std::uint64_t CalculateModelParameterCount(int d_model, int n_layers, int feed, int vocab, int n_ctx, bool learned_pos, bool tie_embed) {
+    std::uint64_t E  = (std::uint64_t)vocab * (std::uint64_t)d_model;
+    std::uint64_t P  = learned_pos ? (std::uint64_t)n_ctx * (std::uint64_t)d_model : 0ULL;
+    std::uint64_t attn = 4ULL * d_model * d_model + 4ULL * d_model;          // Q,K,V,O + biases
+    std::uint64_t mlp  = 2ULL * d_model * feed + (std::uint64_t)feed + d_model;
+    std::uint64_t ln   = 4ULL * d_model;                                      // two LayerNorms (γ,β)
+    std::uint64_t per_layer = attn + mlp + ln;
+    std::uint64_t core = E + P + (std::uint64_t)n_layers * per_layer;
+    std::uint64_t head = tie_embed ? (std::uint64_t)vocab
+                                   : (std::uint64_t)vocab * d_model + (std::uint64_t)vocab;
+    return core + head;
+}
+
+
+std::vector<std::string> StringExplode(const std::string& value, const char character) {
+	std::vector<std::string> result;
+    std::istringstream iss(value);
+    
+    for (std::string token; std::getline(iss, token, character); ) {
+        
+        if (std::move(token) == "") 
+            continue;
+        
+        result.push_back(std::move(token));
+    }
+    return result;
 }
 
 

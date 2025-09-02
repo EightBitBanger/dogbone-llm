@@ -1,12 +1,12 @@
 #include "LauguageModel.h"
 
 LauguageModel::LauguageModel() :
-    vocab_size(0), d_model(0), n_heads(0), d_ff(0), n_layers(0), max_T(0) {}
+    vocab_size(0), d_model(0), n_heads(0), d_ff(0), n_layers(0), n_ctx(0) {}
 
-LauguageModel::LauguageModel(int vocab, int dmodel, int heads, int ff, int layers_count, int maxT)
+LauguageModel::LauguageModel(int vocab, int dmodel, int heads, int ff, int layers_count, int ctx)
     : vocab_size(vocab), d_model(dmodel), n_heads(heads),
-      d_ff(ff), n_layers(layers_count), max_T(maxT),
-      tok(vocab, dmodel), pos(maxT, dmodel), lm_head(dmodel, vocab) {
+      d_ff(ff), n_layers(layers_count), n_ctx(ctx),
+      tok(vocab, dmodel), pos(ctx, dmodel), lm_head(dmodel, vocab) {
     layers.reserve((size_t)n_layers);
     for (int i = 0; i < n_layers; i++) {
         layers.push_back(TransformerBlock(d_model, n_heads, d_ff));
@@ -14,7 +14,7 @@ LauguageModel::LauguageModel(int vocab, int dmodel, int heads, int ff, int layer
 }
 
 Tensor2D LauguageModel::Forward(const std::vector<int>& ids) const {
-    std::vector<float> tmp((size_t)max_T);
+    std::vector<float> tmp((size_t)n_ctx);
     return Forward(ids, tmp.data());
 }
 
@@ -39,7 +39,7 @@ bool LauguageModel::SaveToStream(std::ostream& out) const {
     out.write((const char*)&n_heads, sizeof(int));
     out.write((const char*)&d_ff, sizeof(int));
     out.write((const char*)&n_layers, sizeof(int));
-    out.write((const char*)&max_T, sizeof(int));
+    out.write((const char*)&n_ctx, sizeof(int));
 
     struct W {
         static void tensor(std::ostream& o, const Tensor2D& t) {
