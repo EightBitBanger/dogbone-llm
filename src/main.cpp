@@ -7,6 +7,10 @@ int main() {
     std::string trainingFilename  = "training.txt";
     std::string modelFilename     = "dataset.model";
     
+    // Setup window size
+    SizePx displaySz = DisplayGetSize();
+    WindowResizePx(displaySz.width * 0.7f, displaySz.height * 0.65f);
+    
     // model hyperparameters (canonical names)
     const int   n_ctx           = 128;                 // max sequence length
     const int   d_model         = 128;                 // Model node width
@@ -21,10 +25,10 @@ int main() {
     const float target_loss     = 0.3f;                // End training at the target loss
     
     // sampling
-    const float temperature     = 1.3f;               
-    const int   top_k           = 80;                  // Keep only the k most likely tokens and drop the rest
+    const float temperature     = 0.5f;               
+    const int   top_k           = 40;                  // Keep only the k most likely tokens and drop the rest
     const float top_p           = 1.0f;                // Keep the smallest set of tokens whose probabilities add up to p
-    const int   context_size    = 64;                  // Number of tokens to 'remember'
+    const int   context_size    = 128;                 // Number of tokens to 'remember'
     
     // attention
     const int   n_heads         = 16;
@@ -37,19 +41,10 @@ int main() {
     
     const bool usingGraphicsAcceleration = true;      // Use the graphics card as a math accelerator/co-processor
     
-    
-    if (n_ctx < 1) {
-        std::cerr << "n_ctx must be >= 1\n";
-        return 1;
-    }
-    if (n_heads < 1) {
-        std::cerr << "n_heads must be >= 1\n";
-        return 1;
-    }
-    if ((d_model % n_heads) != 0) {
-        std::cerr << "d_model must be divisible by n_heads\n";
-        return 1;
-    }
+    // Rough checks
+    if (n_ctx < 1)                 {std::cerr << "n_ctx must be >= 1\n"; return 1;}
+    if (n_heads < 1)               {std::cerr << "n_heads must be >= 1\n"; return 1;}
+    if ((d_model % n_heads) != 0)  {std::cerr << "d_model must be divisible by n_heads\n"; return 1;}
     
     Timer timer;
     uint64_t epoch;
@@ -92,6 +87,7 @@ int main() {
     // Set the activation function
     Activation.SetActivationFunction( ActivationType::SWIGLU );
     
+    /*
     // Check for the model file to load raw training text
     std::string trainingText;
     if (!LoadModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) {
@@ -114,6 +110,7 @@ int main() {
         
         std::cout << "Model package loaded" << "\n";
     }
+    */
     
     // Setup sentence structuring
     SentenceStructure sentenceStruct;
@@ -125,8 +122,8 @@ int main() {
     sampler.temperature       = temperature;
     sampler.top_k             = std::min((int)vocab.Size(), top_k);
     sampler.top_p             = top_p;
-    sampler.presence_penalty  = 0.8f;   // 0.5 - 1.0  if you see loops/repeats
-    sampler.frequency_penalty = 0.7f;   // 0.5 - 1.0  for stronger anti-repetition
+    sampler.presence_penalty  = 0.7f;   // 0.5 - 1.0  if you see loops/repeats
+    sampler.frequency_penalty = 0.4f;   // 0.5 - 1.0  for stronger anti-repetition
     sampler.seed              = 42;     // Seed for random runs
     
     ContextWindow context(context_size);
@@ -135,6 +132,7 @@ int main() {
     while (true) {
         std::cout << "> ";
         std::string keyboard_string;
+        
         if (!std::getline(std::cin, keyboard_string)) break;
         
         if (keyboard_string.empty()) 
@@ -146,13 +144,11 @@ int main() {
             
             // ================
             // Purge the model
-            if (keyboard_string == "reset") {
-                std::cout << "Resetting the model...\n";
-                FileDelete(modelFilename);
-                FileDelete(modelFilename + std::string(".state"));
+            if (keyboard_string == "clear") {
+                std::cout << "Reloading the model and context...\n";
                 vocab = Tokenizer();
                 model = LauguageModel();
-                std::cout << "Use /train to retrain a new model.\n\n";
+                model = LauguageModel();
                 continue;
             }
             
@@ -223,8 +219,11 @@ int main() {
             }
         }
         
-        if (keyboard_string == "") 
+        // Check if the model is zeroed
+        if (model.d_model == 0) {
+            std::cout << "Model not loaded...\n\n";
             continue;
+        }
         
         // Encode user prompt
         ContextWindow userContextWindow(context_size);

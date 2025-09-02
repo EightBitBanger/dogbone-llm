@@ -30,13 +30,16 @@
 #include "Sampler.h"
 
 #include "SemanticCoherence.h"
-#include "GrammaticalCongruence.h"
+#include "WeightedReinforcementMemory.h"
 #include "ContextWindow.h"
 #include "Transformer/Transformer.h"
+#include "WeightedReinforcementMemory.h"
 
 //#include "Tests/test.h"
 
 #include <windows.h>
+
+struct SizePx { int width, height; };
 
 template<typename T>
 static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v)); }
@@ -75,23 +78,19 @@ static std::string GetDate(void) {
 }
 */
 
-bool is_sentence_end(const std::string& s) {
-    if (s.empty()) return false;
-    char c = s.back();
-    return (c == '.' || c == '!' || c == '?');
+void WindowResizePx(int width, int height) {
+    HWND hwnd = GetConsoleWindow();
+    if (!hwnd) return;
+    RECT r;
+    GetWindowRect(hwnd, &r);
+    // keep current position, just change size
+    MoveWindow(hwnd, r.left, r.top, width, height, TRUE);
 }
 
-bool is_special(const std::string& s) {
-    return s.size() >= 2 && s.front() == '<' && s.back() == '>';
+SizePx DisplayGetSize() {
+    return { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
 }
 
-bool is_wordish(const std::string& s) {
-    // Count as a "word" if it has at least one alnum
-    for (unsigned char ch : s) {
-        if (std::isalnum(ch)) return true;
-    }
-    return false;
-}
 
 // Build (inputs, targets) pairs for next-token training from raw text lines.
 

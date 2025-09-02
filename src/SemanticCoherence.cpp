@@ -1,6 +1,8 @@
 #include "SemanticCoherence.h"
 #include "Print.h"
 
+#include <iostream>
+
 SemanticCoherence semantic;
 
 bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
@@ -22,16 +24,25 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     // Sample list of next tokens
     std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
     
-    // Apply grammatical corrections
-    GrammaticalCongruence grammer(vocab.id_to_word);
-    grammer.Apply(candidate, context.GetContext(), /*lambda=*/8.0f, /*hard_select=*/false);
-    
     Token token = candidate[0].id;
     std::string word = vocab[token];
     
+    /*
+    for (unsigned int i=0; i < candidate.size(); i++) {
+        Token tokenID = candidate[i].id;
+        std::string word = vocab[ tokenID ];
+        
+        std::cout << candidate[i].prob << "  " << word << "\n";
+    }
+    std::cout << "\n\n";
+    while(1);
+    */
+    
+    //std::cout  << " " << current.Size();
+    
+    
     // Avoid non word starting words
     if (current.Size() < 3 && !semantic.is_wordish(word)) {
-        
         // Check candidates
         for (unsigned int c=0; c < candidate.size(); c++) {
             token = candidate[c].id;
@@ -68,7 +79,6 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     // If we just closed a sentence, bump the counter and possibly stop
     if (semantic.is_end_punct(word)) {
         sentenceStruct.sentenceCounter++;
-        //current.Clear();
         
         if (sentenceStruct.sentenceCounter >= sentenceStruct.sentenceCountMax) {
             return false;
