@@ -47,7 +47,7 @@ public:
     void SortVocabAlphabetically();
     
     // Fits the words in a corpus into the vocabulary
-    void FitToCorpus(Tokenizer& vocab, const std::vector<std::string>& corpus_texts);
+    void FitToCorpus(const std::vector<std::string>& corpus_texts);
     
     // Word <-> ID conversion maps
     std::unordered_map<std::string, int> word_to_id;

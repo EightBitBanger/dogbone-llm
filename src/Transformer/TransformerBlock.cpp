@@ -9,9 +9,9 @@ Tensor2D TransformerBlock::Forward(const Tensor2D& x_in, float* scratch) const {
     Tensor2D x = x_in;
     Tensor2D n1 = ln1.Forward(x);
     Tensor2D a = attn.Forward(n1, scratch);
-    AddInPlace(x, a); // residual
+    AddInPlace(x, a);
     Tensor2D n2 = ln2.Forward(x);
     Tensor2D f = ffn.Forward(n2);
-    AddInPlace(x, f); // residual
+    AddInPlace(x, f);
     return x;
 }

@@ -7,19 +7,21 @@
 #include "tokenizer.h"
 #include "ContextWindow.h"
 
-#include "Transformer/LauguageModel.h"
+#include "Transformer/LanguageModel.h"
 #include "WeightedReinforcementMemory.h"
 
 
 struct SentenceStructure {
-    int wordsPerSentence;   // Max number of tokens to sample per sentence
-    int sentenceCountMax;   // Max number of sentences
+    int wordsPerSentenceMax; // Maximum number of tokens to sample per sentence
+    int wordsPerSentenceMin; // Minimum number of tokens to sample per sentence
+    int sentenceCountMax;    // Max number of sentences
     
-    int wordsCounter;       // Current word count
-    int sentenceCounter;    // Current sentence count
+    int wordsCounter;        // Current word count
+    int sentenceCounter;     // Current sentence count
     
     SentenceStructure() :
-        wordsPerSentence(3), 
+        wordsPerSentenceMax(24), 
+        wordsPerSentenceMin(5), 
         sentenceCountMax(1),
         wordsCounter(0),
         sentenceCounter(0) {}
@@ -29,7 +31,7 @@ class SemanticCoherence {
 public:
     
     // Sample a token context stream through a model via a given vocabulary and sentence structure.
-    bool ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
+    bool ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
     
     std::string lower(std::string& s);
     

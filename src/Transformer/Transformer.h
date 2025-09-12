@@ -2,9 +2,10 @@
 #define TRANSFORMER_H
 
 #include "Tensor2D.h"
+#include "CrossEntropyLoss.h"
 #include "LinearLayer.h"
 #include "LayerNormalization.h"
-#include "LauguageModel.h"
+#include "LanguageModel.h"
 #include "AdamOptimization.h"
 #include "GradientAccumulator.h"
 

@@ -1,45 +1,49 @@
 #include "main.h"
 #include <iostream>
 
-//#define RUN_UNIT_TESTS
+#define RUN_UNIT_TESTS
 
 int main() {
     std::string trainingFilename  = "ts.txt";
-    std::string modelFilename     = "ds.model";
+    std::string modelFilename     = "";
     
     // Setup window size
     SizePx displaySz = DisplayGetSize();
     WindowResizePx(displaySz.width * 0.7f, displaySz.height * 0.65f);
     
-    // model hyperparameters (canonical names)
-    const int   n_ctx           = 128;                 // max sequence length
-    const int   d_model         = 128;                 // Model node width
-    const int   n_layers        = 8;                   // Model depth
-    const int   d_ff            = 4 * d_model;         // Should be 4 * d_model
+    // Model
+    const int   n_ctx             = 64;                  // Max input sequence length
+    const int   d_model           = 64;                  // Model node width
+    const int   n_layers          = 24;                  // Model depth
+    const int   d_ff              = 4 * d_model;         // Should be 4 * d_model
     
-    // optimizer   
-    const float lr              = 0.001f;              // Initial learning rate
-    const float lr_min          = 0.0001f;             // Minimum learning rate
-    const float lr_decay        = 0.997f;              // Rate decay multiplier
-    const float lr_decay_begin  = 2.0f;                // Target to begin decaying
-    const float target_loss     = 0.3f;                // End training at the target loss
+    // Optimizer
+    const float lr                = 0.001f;              // Initial learning rate
+    const float lr_min            = 0.0001f;             // Minimum learning rate
+    const float lr_decay          = 0.98f;               // Rate decay multiplier
+    const float lr_decay_begin    = 5.0f;                // Target to begin decaying
+    const float target_loss       = 3.0f;                // End training at the target loss
     
-    // sampling
-    const float temperature     = 0.8f;               
-    const int   top_k           = 80;                  // Keep only the k most likely tokens and drop the rest
-    const float top_p           = 0.8f;                // Keep the smallest set of tokens whose probabilities add up to p
-    const int   context_size    = 128;                 // Number of tokens to 'remember'
+    // Sampling
+    const float temperature       = 0.3f;                // Scale the probability distribution. Higher = random
+    const int   top_k             = 200;                 // Keep only the k most likely tokens and drop the rest
+    const float top_p             = 0.8f;                // Keep the smallest set of tokens whose probabilities add up to p
+    const int   context_size      = n_ctx;               // Number of tokens to 'remember'
+    // Penalties
+    const float presencePenalty   = 0.2f;                // 0.5 - 1.0  Degrade tokens that have been seen already
+    const float frequencyPenalty  = 0.2f;                // 0.5 - 1.0  Degrade tokens by how many times they repeat
     
-    // attention
-    const int   n_heads         = 16;
-    const int   d_head          = d_model / n_heads;   // d_model must be divisible by n_heads
+    // Attention
+    const int   n_heads           = 2;
+    const int   d_head            = d_model / n_heads;   // d_model must be divisible by n_heads
     
     // Sentence structuring
-    const int tokenCountMax           = 1024;          // Absolute max number of tokens to return as the response
-    const int wordsPerSentence        = 24;            // Max number of words per sentence
-    const int sentenceCountMax        = 3;             // Max number of sentences or strings of tokens broken by a period
+    const int tokenCountMax       = 1024;                // Absolute max number of tokens to return as the response
+    const int wordsPerSentenceMax = 24;                  // Maximum number of words per sentence
+    const int wordsPerSentenceMin = 3;                   // Minimum number of words per sentence
+    const int sentenceCountMax    = 1;                   // Max number of sentences or strings of tokens broken by a period
     
-    const bool usingGraphicsAcceleration = false;      // Use the graphics card as a math accelerator/co-processor
+    const bool usingGraphicsAcceleration = false;        // Use the graphics card as a math accelerator/co-processor
     
     // Rough checks
     if (n_ctx < 1)                 {std::cerr << "n_ctx must be >= 1\n"; return 1;}
@@ -47,15 +51,20 @@ int main() {
     if ((d_model % n_heads) != 0)  {std::cerr << "d_model must be divisible by n_heads\n"; return 1;}
     
     Timer timer;
-    uint64_t epoch;
+    uint64_t epoch = 0;
     float avgLoss;
     float learnRate = lr;
     float lossDrop = target_loss;
     
     std::srand(42);
     
-    Tokenizer vocab;
-    LauguageModel model;
+    Tokenizer      vocab;
+    LanguageModel  model;
+    
+    Tokenizer      vocabB;
+    LanguageModel  modelB;
+    
+    bool duoMode = false;            // toggle duel model back-and-forth mode
     
     GLContext gl;
     
@@ -77,55 +86,29 @@ int main() {
     
 #ifdef RUN_UNIT_TESTS
     std::cout << "\n-------- Unit tests --------\n";
-    
-    RunAllUnitTests();
-    
-    //TestTensorShader(shader);
+    RunTests();
     std::cout << "\n\n";
 #endif
     
     // Set the activation function
     Activation.SetActivationFunction( ActivationType::SWIGLU );
     
-    /*
-    // Check for the model file to load raw training text
-    std::string trainingText;
-    if (!LoadModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) {
-        if (!FileTextLoad(trainingFilename, trainingText) || trainingText.empty()) {
-            std::cout << "Training data file not found or empty 'training.txt'..." << "\n";
-        }
-        std::cout << "Model package not found..." << "\n";
-        
-        if (usingGraphicsAcceleration) {
-            TrainModelGPU(trainingFilename, modelFilename, model, vocab, timer, 
-                        d_model, n_heads, d_ff, n_layers, n_ctx, 
-                        learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop, shader);
-        } else {
-            TrainModelCPU(trainingFilename, modelFilename, model, vocab, timer, 
-                        d_model, n_heads, d_ff, n_layers, n_ctx, 
-                        learnRate, lr_min, lr_decay_begin, lr_decay, avgLoss, lossDrop);
-        }
-        
-    } else {
-        
-        std::cout << "Model package loaded" << "\n";
-    }
-    */
-    
     // Setup sentence structuring
     SentenceStructure sentenceStruct;
     sentenceStruct.sentenceCountMax = sentenceCountMax;
-    sentenceStruct.wordsPerSentence = wordsPerSentence;
+    sentenceStruct.wordsPerSentenceMax = wordsPerSentenceMax;
+    sentenceStruct.wordsPerSentenceMin = wordsPerSentenceMin;
     
     // Fire up the sampler
     SamplingParams sampler;
     sampler.temperature       = temperature;
     sampler.top_k             = std::min((int)vocab.Size(), top_k);
     sampler.top_p             = top_p;
-    sampler.presence_penalty  = 0.9f;   // 0.5 - 1.0  if you see loops/repeats
-    sampler.frequency_penalty = 1.3f;   // 0.5 - 1.0  for stronger anti-repetition
+    sampler.presence_penalty  = presencePenalty;
+    sampler.frequency_penalty = frequencyPenalty;
     sampler.seed              = 42;     // Seed for random runs
     
+    // Begin a context window
     ContextWindow context(context_size);
     
     std::cout << "\n";
@@ -135,7 +118,7 @@ int main() {
         
         // User prompt
         if (!std::getline(std::cin, keyboard_string)) break;
-        if (keyboard_string.empty()) 
+        if (keyboard_string.empty() || keyboard_string[0] == ' ') 
             continue;
         std::vector<std::string> keyboard_splt = StringExplode(keyboard_string, ' ');
         
@@ -143,6 +126,19 @@ int main() {
         if (keyboard_splt[0][0] == '/') {
             // Remove leading slash
             keyboard_splt[0].erase(keyboard_splt[0].begin());
+            
+            // ================
+            // Help section
+            if (keyboard_splt[0] == "?") {
+                std::cout << "source 'filename'     Set the source corpus document.\n";
+                std::cout << "name 'filename'       Set the name for saving the model file.\n";
+                std::cout << "load 'filename'       Load from a '.model' file.\n";
+                std::cout << "save                  Save to a '.model' file.\n";
+                std::cout << "unload                Unload and clear model memory.\n";
+                std::cout << "clear                 Clear the context window.\n";
+                std::cout << "train                 Begin a training cycle\n";
+                continue;
+            }
             
             // ================
             // Set a source corpus
@@ -153,7 +149,17 @@ int main() {
                         std::cout << "Training source not found... '" << trainingFilename << "'\n\n";
                         continue;
                     }
-                    std::cout << "Training source set '" << trainingFilename << "'\n\n";
+                    std::cout << "Training source file set '" << trainingFilename << "'\n\n";
+                }
+                continue;
+            }
+            
+            // ================
+            // Set the model filename
+            if (keyboard_splt[0] == "name") {
+                if (keyboard_splt.size() > 1) {
+                    modelFilename = keyboard_splt[1] + ".model";
+                    std::cout << "Model filename set '" << modelFilename << "'\n\n";
                 }
                 continue;
             }
@@ -162,54 +168,57 @@ int main() {
             // Load a model
             if (keyboard_splt[0] == "load") {
                 if (keyboard_splt.size() > 1) {
-                    modelFilename = keyboard_splt[1] + ".model";
+                    modelFilename = keyboard_splt[1] + std::string(".model");
                     if (!FileExists(modelFilename)) {
-                        std::cout << "Model not found...\n\n";
+                        std::cout << "Model not found\n\n";
                         continue;
                     } else {
-                        // Clear the old model
-                        vocab = Tokenizer();
-                        model = LauguageModel();
-                        std::cout << "Loading model package '" << modelFilename << "'\n\n";
+                        vocab.Clear();
+                        model = LanguageModel();
+                        std::cout << "Loading model package '" << modelFilename << "'\n";
+                        
+                        if (LoadModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) {
+                            std::cout << "Model ready...\n\n";
+                            vocabB = vocab;
+                            modelB = model;
+                            continue;
+                        }
                     }
                 }
-                // Load the model
-                if (LoadModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) {
+                if (modelFilename == "") {
+                    std::cout << "Model filename not set '" << modelFilename << "'\n\n";
                     continue;
                 }
-                std::cout << "Error loading model package... '" << modelFilename << "'\n\n";
+                std::cout << "Error loading model package '" << modelFilename << "'\n\n";
                 continue;
             }
             
             // ================
             // Save a model
             if (keyboard_splt[0] == "save") {
-                if (keyboard_splt.size() > 1) {
-                    modelFilename = keyboard_splt[1] + ".model";
-                    if (FileExists(modelFilename)) {
-                        std::cout << "Model file already exists...\n\n";
-                        continue;
-                    } else {
-                        // Clear the old model
-                        vocab = Tokenizer();
-                        model = LauguageModel();
-                        std::cout << "Saving model package '" << modelFilename << "'\n\n";
-                    }
-                }
-                // Load the model
-                if (SaveModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) {
+                if (keyboard_splt.size() > 1) 
+                    modelFilename = keyboard_splt[1] + std::string(".model");
+                std::cout << "Saving model package '" << modelFilename << "'\n\n";
+                if (SaveModelPackage(modelFilename, model, vocab, trainer, epoch, learnRate, avgLoss)) 
                     continue;
-                }
-                std::cout << "Error saving model package... '" << modelFilename << "'\n\n";
+                std::cout << "Error saving model package '" << modelFilename << "'\n\n";
                 continue;
             }
             
             // ================
-            // Purge the model
+            // Unload the model
+            if (keyboard_splt[0] == "unload") {
+                std::cout << "Unloading and zeroing the model...\n\n";
+                vocab.Clear();
+                model = LanguageModel();
+                context = ContextWindow(context_size);
+                continue;
+            }
+            
+            // ================
+            // Clear context
             if (keyboard_splt[0] == "clear") {
-                std::cout << "Resetting the model and context...\n\n";
-                vocab = Tokenizer();
-                model = LauguageModel();
+                std::cout << "Resetting the context...\n\n";
                 context = ContextWindow(context_size);
                 continue;
             }
@@ -217,6 +226,12 @@ int main() {
             // ================
             // Kick off a learning cycle
             if (keyboard_splt[0] == "train" || keyboard_splt[0] == "learn") {
+                
+                if (modelFilename == "") {
+                    std::cout << "Model filename not set...\n\n";
+                    continue;
+                }
+                
                 if (usingGraphicsAcceleration) {
                     TrainModelGPU(trainingFilename, modelFilename, model, vocab, timer, 
                                 d_model, n_heads, d_ff, n_layers, n_ctx, 
@@ -253,8 +268,22 @@ int main() {
                     std::istringstream iss(keyboard_splt[1]);
                     iss >> lossDrop;
                 }
-                std::cout << "Target loss " << std::setprecision(4) << lossDrop;
+                std::cout << "Minimum loss drop out  " << std::setprecision(4) << lossDrop;
                 std::cout << "\n\n";
+                continue;
+            }
+            
+            // ================
+            // Toggle duo mode
+            if (keyboard_splt[0] == "duo") {
+                if (keyboard_splt.size() > 1) {
+                    std::string v = keyboard_splt[1];
+                    if (v == "on")  duoMode = true;
+                    if (v == "off") duoMode = false;
+                } else {
+                    duoMode = !duoMode;
+                }
+                std::cout << "Duo mode: " << (duoMode ? "ON" : "OFF") << "\n\n";
                 continue;
             }
             
@@ -268,7 +297,7 @@ int main() {
                 std::cout << "n_layers             " << model.n_layers << "\n\n";
                 
                 std::cout << "Feed size            " << model.d_ff << "\n";
-                std::cout << "attention heads      " << model.n_heads << "\n\n";
+                std::cout << "attention heads      " << model.d_model / model.n_heads << "\n\n";
                 
                 std::cout << "Context window       " << context_size << "\n";
                 std::cout << "Vocabulary           " << model.vocab_size << "\n\n";
@@ -280,77 +309,65 @@ int main() {
             }
         }
         
-        // Check if the model is zeroed
-        if (model.d_model == 0) {
+        // Check if the main model is zeroed
+        if (model.d_model == 0 || vocab.Size() == 0) {
             std::cout << "Model not loaded...\nUse /load 'name' to load a model\n\n";
             continue;
         }
         
-        // Encode user prompt
-        ContextWindow userContextWindow(context_size);
-        std::vector<Token>& userContext = userContextWindow.GetContext();
-        userContext = Encode(vocab, keyboard_string);
-        for (unsigned int id=0; id < userContext.size(); id++) 
-            context.Add( userContext[id] );
-        
-        // Reset the context and counters
-        userContextWindow.Clear();
-        
-        sentenceStruct.sentenceCounter = 0;
-        sentenceStruct.wordsCounter = 0;
-        
-        // Sample until a word token is found to kick off the stream
-        bool found=false;
-        for (unsigned int retry = 0; retry < 4; retry++) {
-            // Prime the context with a beginning of sentence token
-            context.Add(vocab.token.bos_id);
-            std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, vocab.Size(), 0.0001f, true);
-            // Check candidates list for an appropriate token
-            for (unsigned int c=0; c < candidate.size(); c++) {
-                Token token = candidate[c].id;
-                std::string word = vocab[token];
-                if (semantic.is_wordish(word)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) break;
+        // Single-model or duo-model flow
+        if (!duoMode) {
+            ContextWindow userContextWindow(context_size);
+            std::vector<Token>& userContext = userContextWindow.GetContext();
+            userContext = Encode(vocab, keyboard_string);
+            for (unsigned int id=0; id < userContext.size(); ++id) 
+                context.Add( userContext[id] );
+            
+            (void)GenerateOnce(model, vocab, sampler, context, sentenceStruct, tokenCountMax, context_size);
+            printLn();
+            printLn();
+            continue;
         }
         
-        // Check beginning token
-        if (!found) {
-            std::cout << "Error: stream did not produce tokens\n\n";
-        }
+        ContextWindow ctxA(context_size);
+        ContextWindow ctxB(context_size);
         
-        // Kick off a response stream
-        for (unsigned int tokenCount=0; tokenCount < tokenCountMax; tokenCount++) {
+        std::vector<Token> seedA = Encode(vocab, keyboard_string);
+        for (size_t i = 0; i < seedA.size(); ++i) ctxA.Add(seedA[i]);
+        
+        // Kick off a duel between two models
+        std::cout << "\n";
+        int turn = 0;
+        while (true) {
+            // Model A
+            print("A) ");
+            std::string outA = GenerateOnce(model,  vocab,  sampler, ctxA, sentenceStruct, tokenCountMax, context_size);
+            printLn();
             
-            // Process the token stream
-            if (!semantic.ProcessTokenStream(model, vocab, sampler, context, userContextWindow, sentenceStruct)) 
-                break;
+            std::vector<Token> feedB = Encode(vocabB, outA);
+            for (size_t i = 0; i < feedB.size(); ++i) ctxB.Add(feedB[i]);
             
-            // Terminate the token steam early
+            // Model B
+            print("B) ");
+            std::string outB = GenerateOnce(modelB, vocabB, sampler, ctxB, sentenceStruct, tokenCountMax, context_size);
+            printLn();
+            
+            std::vector<Token> feedA = Encode(vocab, outB);
+            for (size_t i = 0; i < feedA.size(); ++i) ctxA.Add(feedA[i]);
+            
             if (KeyPressedNonBlocking()) 
                 break;
         }
         
         printLn();
-        std::cout << "\n\n";
+        continue;
     }
     return 0;
 }
 
 
-
-
-
-
-
-
-
-
 static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab, Timer& time,
+                          LanguageModel& model, Tokenizer& vocab, Timer& time,
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout,
@@ -387,8 +404,8 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
         std::cout << "Resuming training @ epoch " << (unsigned long long)currentEpoch << " (GPU)\n";
     } else {
         // Fresh start: build vocab and model
-        vocab.FitToCorpus(vocab, corpus);
-        model   = LauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
+        vocab.FitToCorpus(corpus);
+        model   = LanguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
         trainer = NeuralNetwork(learningRate);
         trainer.UseGPU(&gpu);
         trainer.EnableResidentWeights(true);
@@ -470,8 +487,10 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
                 batchCount = 0;
             }
             
-            //SaveModelPackage(modelFilename, model, vocab, trainer,
-            //                (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
+            // Auto save
+            if (time.check()) 
+                SaveModelPackage(modelFilename, model, vocab, trainer,
+                                (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
             
             // Allow user to abort
             if (KeyPressedNonBlocking()) {
@@ -504,7 +523,7 @@ static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilen
 
 
 static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename,
-                          LauguageModel& model, Tokenizer& vocab, Timer& time,
+                          LanguageModel& model, Tokenizer& vocab, Timer& time,
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout) {
@@ -538,8 +557,8 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
         std::cout << "Resuming training @ epoch " << (unsigned long long)currentEpoch << "\n";
     } else {
         // Fresh start: build vocab and model
-        vocab.FitToCorpus(vocab, corpus);
-        model   = LauguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
+        vocab.FitToCorpus(corpus);
+        model   = LanguageModel((int)vocab.Size(), layerWidth, headCount, feedWidth, layerDepth, contextSize);
         trainer = NeuralNetwork(learningRate);
         currentEpoch        = 0;
         currentLearningRate = learningRate;
@@ -603,13 +622,11 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
                     pin_this_thread_to_cpu((unsigned int)t);
                     
                     threadGrads[(size_t)t].InitLike(model);
-                    NeuralNetwork localTrainer = trainer;
-                    localTrainer.opt.learning_rate = trainer.opt.learning_rate;
                     
                     // Stride work assignment across the micro-batch
                     for (size_t j = startIdx + (size_t)t; j < endIdx; j += (size_t)threadsUsed) {
                         // Training pass
-                        float sampleLoss = localTrainer.Step(model, inputSequences[j], targetTokens[j],
+                        float sampleLoss = trainer.Step(model, inputSequences[j], targetTokens[j],
                                                         vocab.token.pad_id, &threadGrads[(size_t)t], false);
                         
                         threadLoss[(size_t)t]        += sampleLoss;
@@ -652,6 +669,8 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
             // Early stop when reaching target loss
             if (runningAvgLoss < lossDropout) {
                 keepTraining = false;
+                
+                SaveModelPackage(modelFilename, model, vocab, trainer, (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
                 break;
             }
             
@@ -677,7 +696,7 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
             
             std::cout << std::flush;
             
-            // Save weights + vocab + optimizer + epoch/LR
+            // Auto save
             if (time.check()) 
                 SaveModelPackage(modelFilename, model, vocab, trainer,
                                 (uint64_t)currentEpoch, currentLearningRate, runningAvgLoss);
@@ -688,13 +707,15 @@ static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilen
                 std::cout << "\n\n";
                 return;
             }
-            // LR decay (same logic)
-            float epochAverage = (runningSampleCount > 0) ? (runningLossSum / (float)runningSampleCount) : 0.0f;
-            if (epochAverage < learningDecayBegin) {
-                float next = learningRateDecay * currentLearningRate;
-                if (next < learningRateMin) next = learningRateMin;
-                currentLearningRate = next;
-            }
+            
+        }
+        
+        // LR decay (same logic)
+        float epochAverage = (runningSampleCount > 0) ? (runningLossSum / (float)runningSampleCount) : 0.0f;
+        if (epochAverage < learningDecayBegin) {
+            float next = learningRateDecay * currentLearningRate;
+            if (next < learningRateMin) next = learningRateMin;
+            currentLearningRate = next;
         }
         
         currentEpoch++;

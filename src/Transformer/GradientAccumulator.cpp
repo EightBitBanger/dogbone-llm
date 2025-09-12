@@ -1,6 +1,6 @@
 #include "GradientAccumulator.h"
 
-void GradientAccumulator::InitLike(const LauguageModel& model) {
+void GradientAccumulator::InitLike(const LanguageModel& model) {
     d_tokW = Tensor2D(model.tok.W.R, model.tok.W.C); std::fill(d_tokW.data.begin(), d_tokW.data.end(), 0.0f);
     d_posP = Tensor2D(model.pos.P.R, model.pos.P.C); std::fill(d_posP.data.begin(), d_posP.data.end(), 0.0f);
     d_lmW  = Tensor2D(model.lm_head.W.R, model.lm_head.W.C); std::fill(d_lmW.data.begin(), d_lmW.data.end(), 0.0f);

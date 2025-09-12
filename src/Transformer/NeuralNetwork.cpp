@@ -231,7 +231,7 @@ void NeuralNetwork::LayerNormBackward(const Tensor2D& x, const LayerNorm& ln, co
 }
 
 // One step on a single (inputs, targets)
-float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
+float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
                           int pad_id, GradientAccumulator* acc, bool apply_updates) {
     if (apply_updates) { if ((int)layer_states.size() != model.n_layers) layer_states.resize((size_t)model.n_layers); }
 
@@ -646,7 +646,7 @@ float NeuralNetwork::Step(LauguageModel& model, const std::vector<int>& inputs, 
     return loss;
 }
 
-float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets,
+float NeuralNetwork::StepGPU(LanguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets,
                              int pad_id, GradientAccumulator* acc, bool apply_updates) {
     if (mGPUResident.enabled && mGPUResident.map.empty()) { UploadWeightsToGPU(model); }
 
@@ -1020,7 +1020,7 @@ float NeuralNetwork::StepGPU(LauguageModel& model, const std::vector<int>& input
 }
 
 
-void NeuralNetwork::ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale) {
+void NeuralNetwork::ApplyGradients(LanguageModel& model, const GradientAccumulator& G, float scale) {
     auto apply_vec = [&](std::vector<float>& w, const std::vector<float>& g, AdamState& s) {
         std::vector<float> gs(g.size());
         for (size_t i=0;i<g.size();++i) gs[i] = g[i] * scale;
@@ -1226,7 +1226,7 @@ static void UploadOneLinear(ShaderTensor* gpu, const LinearLayer& L,
 }
 
 
-void NeuralNetwork::UploadWeightsToGPU(LauguageModel& model) {
+void NeuralNetwork::UploadWeightsToGPU(LanguageModel& model) {
     if (!mGpu) return;
     mGPUResident.map.clear();
 
@@ -1252,7 +1252,7 @@ void NeuralNetwork::UploadWeightsToGPU(LauguageModel& model) {
     mGPUResident.enabled = true;
 }
 
-void NeuralNetwork::RefreshGPUWeightsFromModel(const LauguageModel& model) {
+void NeuralNetwork::RefreshGPUWeightsFromModel(const LanguageModel& model) {
     if (!mGpu) return;
     if (!mGPUResident.enabled) return;
 
@@ -1376,7 +1376,7 @@ bool gpu_attention_scores(ShaderTensor* gpu, const Tensor2D& Q, const Tensor2D& 
 
 
 
-float NeuralNetwork::StepGPU_Batched(LauguageModel& model,
+float NeuralNetwork::StepGPU_Batched(LanguageModel& model,
                       const std::vector<std::vector<int>>& inputs_list,
                       const std::vector<std::vector<int>>& targets_list,
                       int pad_id,

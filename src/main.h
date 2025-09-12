@@ -30,14 +30,75 @@
 #include "Sampler.h"
 
 #include "SemanticCoherence.h"
-#include "WeightedReinforcementMemory.h"
 #include "ContextWindow.h"
 #include "Transformer/Transformer.h"
 #include "WeightedReinforcementMemory.h"
 
-//#include "Tests/test.h"
+#include "Tests/test.h"
 
 #include <windows.h>
+
+static bool KeyPressedNonBlocking();
+static int ReadKeyNonBlocking();
+
+
+
+// ---- Two-model helpers ----
+static std::string TokensToString(const Tokenizer& vocab,
+                                  const std::vector<Token>& tokens,
+                                  size_t startIndex) {
+    std::string out;
+    for (size_t i = startIndex; i < tokens.size(); ++i) {
+        const std::string w = vocab[(size_t)tokens[i]];
+        if (out.empty()) out += w;
+        else {
+            bool punct = (w.size() == 1) && (w[0] == '.' || w[0] == ',' || w[0] == '!' || w[0] == '?' || w[0] == ';' || w[0] == ':');
+            if (!punct) out += " ";
+            out += w;
+        }
+    }
+    return out;
+}
+
+static std::string GenerateOnce(LanguageModel& model, Tokenizer& vocab, SamplingParams& sampler, ContextWindow& context, SentenceStructure& sentenceStruct,
+                                int tokenCountMax, int context_size) {
+    // Sample until a word token is found to kick off the stream.
+    // Prevents starting with a period and immediately ending the response stream.
+    bool found=false;
+    while (!found) {
+        std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, vocab.Size(), 0.0001f, true);
+        // Check candidates list for an appropriate token
+        for (unsigned int c=0; c < candidate.size(); c++) {
+            Token token = candidate[c].id;
+            std::string word = vocab[token];
+            if (semantic.is_wordish(word)) {
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+        context.Add( vocab.word_to_id["."] ); // Prime the context
+    }
+    
+    ContextWindow userCW(context_size);
+    sentenceStruct.sentenceCounter = 0;
+    sentenceStruct.wordsCounter    = 0;
+    userCW.Clear();
+    
+    std::vector<Token>& ctx = context.GetContext();
+    size_t startSize = ctx.size();
+    
+    for (int t = 0; t < tokenCountMax; ++t) {
+        if (!semantic.ProcessTokenStream(model, vocab, sampler, context, userCW, sentenceStruct)) break;
+        if (KeyPressedNonBlocking()) break;
+    }
+    std::string out = TokensToString(vocab, ctx, startSize);
+    return out;
+}
+
+
+
+
 
 struct SizePx { int width, height; };
 
@@ -45,12 +106,12 @@ template<typename T>
 static inline T clampv(T v, T lo, T hi) { return (v < lo ? lo : (v > hi ? hi : v)); }
 
 
-static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, LauguageModel& model, Tokenizer& vocab, Timer& time, 
+static void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, LanguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout);
 
-static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, LauguageModel& model, Tokenizer& vocab, Timer& time, 
+static void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, LanguageModel& model, Tokenizer& vocab, Timer& time, 
                           int layerWidth, int headCount, int feedWidth, int layerDepth, int contextSize, 
                           float& learningRate, float learningRateMin, float learningDecayBegin, float learningRateDecay, 
                           float& avgLoss, float lossDropout, ShaderTensor& gpu);

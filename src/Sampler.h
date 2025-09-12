@@ -51,10 +51,10 @@ public:
     // Generates the next token id given `model` and `context_ids`, using `P`:
     //  - temperature <= 0: greedy ArgMax
     //  - otherwise: applies penalties, temperature, optional top-k/top-p, then samples.
-    int  GetNextToken(const LauguageModel& model, const std::vector<int>& context_ids, const SamplingParams& P);
+    int  GetNextToken(const LanguageModel& model, const std::vector<int>& context_ids, const SamplingParams& P);
     
     // Generates a list of the next probable tokens.
-    std::vector<TokenCandidate> GetProbableTokens(const LauguageModel& model, const std::vector<int>& context_ids, 
+    std::vector<TokenCandidate> GetProbableTokens(const LanguageModel& model, const std::vector<int>& context_ids, 
                                                   const SamplingParams& P, int max_candidates, float min_prob, bool renormalize);
 };
 

@@ -7,7 +7,7 @@
 #include "Tensor2D.h"
 #include "LinearLayer.h"
 #include "LayerNormalization.h"
-#include "LauguageModel.h"
+#include "LanguageModel.h"
 #include "AdamOptimization.h"
 #include "GradientAccumulator.h"
 #include "ShaderTensor.h"
@@ -55,13 +55,13 @@ public:
     void LayerNormBackward(const Tensor2D& x, const LayerNorm& ln, const Tensor2D& dy, std::vector<float>& dgamma, std::vector<float>& dbeta, Tensor2D& dx);
     
     // Run Forward + Backward For One Sequence And Optionally Apply Adam Updates.
-    float Step(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
+    float Step(LanguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, 
                int pad_id, GradientAccumulator* acc = NULL, bool apply_updates = true);
     
     // Runs one training step using GPU-accelerated forwards where available.
     // Falls back to CPU internally if the GPU path is unavailable.
-    float StepGPU(LauguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, int pad_id, GradientAccumulator* acc, bool apply_updates);
-    float StepGPU_Batched(LauguageModel& model,
+    float StepGPU(LanguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets, int pad_id, GradientAccumulator* acc, bool apply_updates);
+    float StepGPU_Batched(LanguageModel& model,
                           const std::vector<std::vector<int>>& inputs_list,
                           const std::vector<std::vector<int>>& targets_list,
                           int pad_id,
@@ -69,7 +69,7 @@ public:
                           bool apply_updates);
     
     // Apply Accumulated Gradients In A Single Adam Step (Optional Scaling).
-    void ApplyGradients(LauguageModel& model, const GradientAccumulator& G, float scale = 1.0f);
+    void ApplyGradients(LanguageModel& model, const GradientAccumulator& G, float scale = 1.0f);
     
     // Build required shaders.
     void BuildShaders();
@@ -78,9 +78,9 @@ public:
     void UseGPU(ShaderTensor* st);
 
     // Upload all model weights once into GPU SSBOs (resident mode).
-    void UploadWeightsToGPU(LauguageModel& model);
+    void UploadWeightsToGPU(LanguageModel& model);
     // Refresh resident SSBOs from current CPU weights (call after optimizer step).
-    void RefreshGPUWeightsFromModel(const LauguageModel& model);
+    void RefreshGPUWeightsFromModel(const LanguageModel& model);
     // Release all resident buffers.
     void ReleaseGPUWeights();
     // Toggle resident-weight path.

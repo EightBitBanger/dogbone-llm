@@ -187,7 +187,7 @@ bool ReadAdamState(std::istream& in, AdamState& s, size_t expected_len) {
 
 // Save model + vocab + optimizer state into a single package.
 bool SaveModelPackage(const std::string& path,
-                             const LauguageModel& model,
+                             const LanguageModel& model,
                              const Tokenizer& vocab,
                              const NeuralNetwork& trainer,
                              uint64_t epoch,
@@ -340,7 +340,7 @@ bool SaveModelPackage(const std::string& path,
 
 // Load model + vocab + optimizer if present.
 // Returns true on success. If OPTS missing, model+vocab still loaded and trainer remains default.
-bool LoadModelPackage(const std::string& path, LauguageModel& model, Tokenizer& vocab, NeuralNetwork& trainer,
+bool LoadModelPackage(const std::string& path, LanguageModel& model, Tokenizer& vocab, NeuralNetwork& trainer,
                              uint64_t& epoch_out, float& current_lr_out, float& last_loss_out) {
     std::ifstream in(path.c_str(), std::ios::binary);
     if (!in.is_open()) return false;
@@ -458,7 +458,7 @@ bool LoadModelPackage(const std::string& path, LauguageModel& model, Tokenizer& 
 // Leaves weights, epoch, Adam moments, etc. untouched.
 bool UpdateModelLROnDisk(const std::string& modelPath, float newLR,
                                 uint64_t* outEpoch, float* outOldLR) {
-    LauguageModel  m;
+    LanguageModel  m;
     Tokenizer     v;
     // seed trainer with something; loader will overwrite states
     NeuralNetwork    t(newLR);
@@ -503,12 +503,12 @@ bool FileTextLoad(std::string& path, std::string& out) {
 }
 
 bool FileExists(std::string filename) {
-    std::ofstream fStream(filename, std::fstream::in | std::fstream::binary);
-    if (!fStream.is_open()) {
-        fStream.close();
+    std::ifstream stream(filename, std::fstream::in | std::fstream::binary);
+    if (!stream.is_open()) {
+        stream.close();
         return false;
     }
-    fStream.close();
+    stream.close();
     return true;
 }
 

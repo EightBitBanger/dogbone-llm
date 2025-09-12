@@ -5,7 +5,7 @@
 
 SemanticCoherence semantic;
 
-bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
+bool SemanticCoherence::ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
                                            ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct) {
     // Candidate shortlist
     const int   kMaxCandidates = vocab.Size();
@@ -23,28 +23,13 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
     
     // Sample list of next tokens
     std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
-    
-    Token token = candidate[0].id;
-    std::string word = vocab[token];
-    
-    /*
-    // TESTING - dump candidate list
-    
-    for (unsigned int i=0; i < candidate.size(); i++) {
-        Token tokenID = candidate[i].id;
-        std::string word = vocab[ tokenID ];
-        
-        std::cout << candidate[i].prob << "  " << word << "\n";
-    }
-    std::cout << "\n\n";
-    while(1);
-    */
-    
-    //std::cout  << " " << current.Size();
-    
+    if (candidate.size() == 0) 
+        return false;
     
     // Avoid non word starting words
-    if (current.Size() < 3 && !semantic.is_wordish(word)) {
+    Token token = candidate[0].id;
+    std::string word = vocab[token];
+    if (current.Size() < sentenceStruct.wordsPerSentenceMin && !semantic.is_wordish(word)) {
         // Check candidates
         for (unsigned int c=0; c < candidate.size(); c++) {
             token = candidate[c].id;
@@ -64,12 +49,11 @@ bool SemanticCoherence::ProcessTokenStream(LauguageModel& model, Tokenizer& voca
         word = semantic.capitalize(word);
     }
     
-    // Pull punctuation tight (esp. '.'), otherwise add a leading space
+    // Pull punctuation tight, otherwise add a leading space
     const bool is_tight_punct = semantic.is_end_punct(word) || semantic.is_plain_punct(word) || semantic.is_closing_bracket(word);
     std::string out = word;
-    if (!ctx_ids.empty() && !is_tight_punct) {
+    if (!ctx_ids.empty() && !is_tight_punct) 
         out.insert(0, " ");
-    }
     
     // Emit the token
     print(out);

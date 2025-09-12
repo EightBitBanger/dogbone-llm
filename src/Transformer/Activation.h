@@ -19,8 +19,6 @@ public:
     
     ActivationFunctions();
     
-private:
-    
     // GELU
     static Tensor2D GELU_Forward(const Tensor2D& x);
     static void GELU_Backward(const Tensor2D& x_pre, const Tensor2D& dy, Tensor2D& dx);
