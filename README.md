@@ -1,6 +1,6 @@
 # Transformer Language Model (C++ / CPU/GPU)
 
-> A compact, transformer stack written in c++ with a simple repl interface, multithreaded CPU training, optional GPU acceleration
+> A compact, transformer stack written in c++ with a simple repl interface, multithreaded CPU training, optional GPU acceleration through openGL.
 
 <br>
 
@@ -17,3 +17,4 @@
   - SwiGLU (Swish and GLU)
 - Sampler
   - Top-P/Top-K
+  
