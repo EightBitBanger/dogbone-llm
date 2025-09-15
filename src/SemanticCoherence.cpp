@@ -3,13 +3,11 @@
 
 #include <iostream>
 
-SemanticCoherence semantic;
-
-bool SemanticCoherence::ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, SamplingParams& sampler,
+bool SemanticCoherence::ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, TokenSampler& Sampler, SamplingParams& samplerParams,
                                            ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct) {
     // Candidate shortlist
     const int   kMaxCandidates = vocab.Size();
-    const float kMinProb       = 0.0001f;
+    const float kMinProb       = 0.0f;
     const bool  kRenormalize   = true;
     
     // Find sentence starting point
@@ -18,24 +16,25 @@ bool SemanticCoherence::ProcessTokenStream(LanguageModel& model, Tokenizer& voca
     if (!at_sentence_start) {
         Token lastId = ctx_ids.back();
         std::string lastWord = vocab[lastId];
-        at_sentence_start = semantic.is_end_punct(lastWord);
+        at_sentence_start = is_end_punct(lastWord);
     }
     
     // Sample list of next tokens
-    std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), sampler, kMaxCandidates, kMinProb, kRenormalize);
+    std::vector<TokenCandidate> candidate = Sampler.GetProbableTokens(model, context.GetContext(), samplerParams, kMaxCandidates, kMinProb, kRenormalize);
     if (candidate.size() == 0) 
         return false;
     
     // Avoid non word starting words
     Token token = candidate[0].id;
     std::string word = vocab[token];
-    if (current.Size() < sentenceStruct.wordsPerSentenceMin && !semantic.is_wordish(word)) {
+    
+    if (current.Size() < sentenceStruct.wordsPerSentenceMin && !is_wordish(word)) {
         // Check candidates
         for (unsigned int c=0; c < candidate.size(); c++) {
             token = candidate[c].id;
             word = vocab[token];
             
-            if (semantic.is_wordish(word)) 
+            if (is_wordish(word)) 
                 break;
         }
     }
@@ -45,30 +44,33 @@ bool SemanticCoherence::ProcessTokenStream(LanguageModel& model, Tokenizer& voca
         at_sentence_start = true;
     
     // Capitalize first word in sentence
-    if (at_sentence_start && semantic.is_wordish(word)) {
-        word = semantic.capitalize(word);
+    if (at_sentence_start && is_wordish(word)) {
+        word = capitalize(word);
     }
     
     // Pull punctuation tight, otherwise add a leading space
-    const bool is_tight_punct = semantic.is_end_punct(word) || semantic.is_plain_punct(word) || semantic.is_closing_bracket(word);
-    std::string out = word;
+    const bool is_tight_punct = is_end_punct(word) || is_plain_punct(word) || is_closing_bracket(word);
+    std::string result = word;
     if (!ctx_ids.empty() && !is_tight_punct) 
-        out.insert(0, " ");
+        result.insert(0, " ");
     
     // Emit the token
-    print(out);
+    print(result);
     
     // Update contexts
     context.Add(token);
     current.Add(token);
     
-    // If we just closed a sentence, bump the counter and possibly stop
-    if (semantic.is_end_punct(word)) {
+    // Check end of sentence and word counter
+    if (is_end_punct(word)) {
         sentenceStruct.sentenceCounter++;
         
         if (sentenceStruct.sentenceCounter >= sentenceStruct.sentenceCountMax) {
+            sentenceStruct.wordsCounter=0;
             return false;
         }
+    } else {
+        sentenceStruct.wordsCounter++;
     }
     return true;
 }

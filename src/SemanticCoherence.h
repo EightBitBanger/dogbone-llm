@@ -20,9 +20,9 @@ struct SentenceStructure {
     int sentenceCounter;     // Current sentence count
     
     SentenceStructure() :
-        wordsPerSentenceMax(24), 
-        wordsPerSentenceMin(5), 
-        sentenceCountMax(1),
+        wordsPerSentenceMax(0), 
+        wordsPerSentenceMin(0), 
+        sentenceCountMax(0),
         wordsCounter(0),
         sentenceCounter(0) {}
 };
@@ -31,7 +31,8 @@ class SemanticCoherence {
 public:
     
     // Sample a token context stream through a model via a given vocabulary and sentence structure.
-    bool ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, SamplingParams& sampler, ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
+    bool ProcessTokenStream(LanguageModel& model, Tokenizer& vocab, TokenSampler& Sampler, SamplingParams& samplerParams, 
+                            ContextWindow& context, ContextWindow& current, SentenceStructure& sentenceStruct);
     
     std::string lower(std::string& s);
     
@@ -63,6 +64,4 @@ public:
     
 };
 
-
-extern SemanticCoherence semantic;
 #endif

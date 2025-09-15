@@ -58,5 +58,4 @@ public:
                                                   const SamplingParams& P, int max_candidates, float min_prob, bool renormalize);
 };
 
-extern TokenSampler Sampler;
 #endif

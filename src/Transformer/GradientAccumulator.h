@@ -32,6 +32,8 @@ public:
     void Add(const GradientAccumulator& other);
     
     void Scale(float s);
+    
+    void Clear();
 };
 
 #endif

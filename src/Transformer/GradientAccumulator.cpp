@@ -90,3 +90,31 @@ void GradientAccumulator::Scale(float s) {
         for (size_t i=0;i<B.d_fc2b.size();++i)      B.d_fc2b[i]      *= s;
     }
 }
+
+void GradientAccumulator::Clear() {
+    std::fill(d_tokW.data.begin(), d_tokW.data.end(), 0.0f);
+    std::fill(d_posP.data.begin(), d_posP.data.end(), 0.0f);
+    std::fill(d_lmW.data.begin(),  d_lmW.data.end(),  0.0f);
+    std::fill(d_lmb.begin(),       d_lmb.end(),       0.0f);
+    for (auto& G : layers) {
+        std::fill(G.d_ln1g.begin(), G.d_ln1g.end(), 0.0f);
+        std::fill(G.d_ln1b.begin(), G.d_ln1b.end(), 0.0f);
+        std::fill(G.d_ln2g.begin(), G.d_ln2g.end(), 0.0f);
+        std::fill(G.d_ln2b.begin(), G.d_ln2b.end(), 0.0f);
+
+        std::fill(G.dWq.data.begin(), G.dWq.data.end(), 0.0f);
+        std::fill(G.dbq.begin(),      G.dbq.end(),      0.0f);
+        std::fill(G.dWk.data.begin(), G.dWk.data.end(), 0.0f);
+        std::fill(G.dbk.begin(),      G.dbk.end(),      0.0f);
+        std::fill(G.dWv.data.begin(), G.dWv.data.end(), 0.0f);
+        std::fill(G.dbv.begin(),      G.dbv.end(),      0.0f);
+        std::fill(G.dWo.data.begin(), G.dWo.data.end(), 0.0f);
+        std::fill(G.dbo.begin(),      G.dbo.end(),      0.0f);
+
+        std::fill(G.d_fc1W.data.begin(), G.d_fc1W.data.end(), 0.0f);
+        std::fill(G.d_fc1b.begin(),      G.d_fc1b.end(),      0.0f);
+        std::fill(G.d_fc2W.data.begin(), G.d_fc2W.data.end(), 0.0f);
+        std::fill(G.d_fc2b.begin(),      G.d_fc2b.end(),      0.0f);
+    }
+}
+
