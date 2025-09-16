@@ -1,6 +1,6 @@
 # Transformer Language Model (C++ / CPU/GPU)
 
-> A compact, transformer stack written in c++ with a simple repl interface, multithreaded CPU training, optional GPU acceleration through openGL.
+> A compact, transformer stack written in C++ with a simple repl interface, multithreaded CPU training, optional GPU acceleration through openGL.
 
 <br>
 
