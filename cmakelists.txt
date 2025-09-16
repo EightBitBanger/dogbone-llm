@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.10)
+project(dogbone-llm LANGUAGES CXX)
+
+# Use C++11 standard
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Collect all .cpp files in src and subdirectories
+file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.cxx" "src/*.cc")
+
+# Define the executable
+add_executable(dogbone-llm ${SOURCES})
+
+# Link required libraries (Windows-specific)
+target_link_libraries(dogbone-llm
+    glew32s
+    opengl32
+    gdi32
+    user32
+)
