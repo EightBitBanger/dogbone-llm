@@ -7,17 +7,18 @@
 NeuralNetwork trainer(0.001f);
 
 int main() {
+    std::string currentDate = GetDate();
     std::string trainingFilename  = "corpus.txt";
-    std::string modelFilename     = "dataset.model";
+    std::string modelFilename     = currentDate + ".model";
     
     // Setup window size
     SizePx displaySz = DisplayGetSize();
     WindowResizePx(displaySz.width * 0.7f, displaySz.height * 0.65f);
     
     // Model
-    const int   n_ctx             = 128;                 // Max input sequence length
+    const int   n_ctx             = 64;                  // Max input sequence length
     const int   d_model           = 128;                 // Model node width
-    const int   n_layers          = 12;                  // Model depth
+    const int   n_layers          = 24;                  // Model depth
     const int   d_ff              = 4 * d_model;         // Should be 4 * d_model
     
     // Optimizer
@@ -30,14 +31,14 @@ int main() {
     // Sampling
     const float temperature       = 0.8f;                // Scale the probability distribution. Higher = random
     const int   top_k             = 200;                 // Keep only the k most likely tokens and drop the rest
-    const float top_p             = 0.0f;                // Keep the smallest set of tokens whose probabilities add up to p
+    const float top_p             = 0.85f;               // Keep the smallest set of tokens whose probabilities add up to p
     const int   context_size      = n_ctx;               // Number of tokens to 'remember'
     // Penalties
     const float presencePenalty   = 0.8f;                // 0.5 - 1.0  Degrade tokens that have been seen already
     const float frequencyPenalty  = 1.4f;                // 0.5 - 1.0  Degrade tokens by how many times they repeat
     
     // Attention
-    const int   n_heads           = 2;
+    const int   n_heads           = 4;
     const int   d_head            = d_model / n_heads;   // d_model must be divisible by n_heads
     
     // Sentence structuring
@@ -46,7 +47,7 @@ int main() {
     const int wordsPerSentenceMin = 3;                   // Minimum number of words per sentence
     const int sentenceCountMax    = 1;                   // Max number of sentences or strings of tokens broken by a period
     
-    const bool usingGraphicsAcceleration = true;        // Use the graphics card as a math accelerator/co-processor via openGL
+    const bool usingGraphicsAcceleration = false;        // Use the graphics card as a math accelerator/co-processor via openGL
     
     // Rough checks
     if (n_ctx < 1)                 {std::cerr << "n_ctx must be >= 1\n"; return 1;}
@@ -205,6 +206,7 @@ int main() {
                 continue;
             }
             
+            
             // ================
             // Unload the model
             if (keyboard_splt[0] == "unload") {
@@ -349,8 +351,8 @@ void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, La
     uint64_t savedEpoch           = 0;
     float    restoredLearningRate = learningRate;
     
-    int   currentEpoch            = 0;            // set below
-    float currentLearningRate     = learningRate; // set below
+    int   currentEpoch            = 0;
+    float currentLearningRate     = learningRate;
     
     // Dataset stride (token step)
     const int datasetStride = contextSize;
@@ -389,7 +391,7 @@ void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, La
         std::cout << "\r"
                 << "Epoch  " << std::right << std::setw(1) << savedEpoch << "  "
                 << "   Rate  " << std::setprecision(8) << std::setw(1) << currentLearningRate << "  "
-                << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << avgLoss << "\n";
+                << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << avgLoss << "   PPL  " << std::setprecision(6) << std::exp((double)avgLoss) << "\n";
     }
     
     // Single-threaded loop
@@ -428,7 +430,7 @@ void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, La
             std::cout << "\r"
                     << "Epoch  " << std::right << std::setw(1) << currentEpoch << "  "
                     << "   Rate  " << std::setprecision(8) << std::setw(1) << currentLearningRate << "  "
-                    << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << runningAvgLoss << "   "
+                    << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << runningAvgLoss << "   PPL  " << std::setprecision(6) << std::exp((double)runningAvgLoss) << "   "
                     << "   " << std::setprecision(3) << percentTowardDropout << " %       ";
             if (epochProgress < 100.0f) {
                 std::cout << "   " << std::setprecision(3) << epochProgress << " %       ";
@@ -538,7 +540,7 @@ void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, La
         std::cout << "\r"
                 << "Epoch  " << std::right << std::setw(1) << savedEpoch << "  "
                 << "   Rate  " << std::setprecision(8) << std::setw(1) << currentLearningRate << "  "
-                << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << avgLoss << "\n";
+                << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << avgLoss << "   PPL  " << std::setprecision(6) << std::exp((double)avgLoss) << "\n";
     }
     
     // Determine logical processors
@@ -566,7 +568,7 @@ void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, La
         trainer.opt.learning_rate = currentLearningRate;
         
         const size_t microBatchSize = logicalProcs;    // Multi-threaded micro-batch training
-        const int threadsUsed = logicalProcs * 1.5f;   // Always spawn one worker per logical processor
+        const int threadsUsed = logicalProcs;          // Always spawn one worker per logical processor
         
         // Pre-allocate accumulator to reuse buffers across micro-batches
         GradientAccumulator accumulatedGradients;
@@ -607,7 +609,7 @@ void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, La
                 threadPool[i].join();
             }
             
-                        // Merge gradients/loss (reuse pre-allocated buffers)
+            // Merge gradients/loss (reuse pre-allocated buffers)
             accumulatedGradients.Clear();
             float  batchLossSum      = 0.0f;
             size_t batchSampleCount  = 0;
@@ -650,7 +652,7 @@ void TrainModelCPU(std::string& trainingFilename, std::string& modelFilename, La
             std::cout << "\r"
                       << "Epoch  " << std::right << std::setw(1) << currentEpoch << "  "
                       << "   Rate  " << std::setprecision(8) << std::setw(1) << currentLearningRate << "  "
-                      << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << runningAvgLoss << "   "
+                      << "   Loss  " << std::fixed << std::setprecision(8) << std::setw(1) << runningAvgLoss << "   PPL  " << std::setprecision(6) << std::exp((double)runningAvgLoss) << "   "
                       << "   " << std::setprecision(3) << percentTowardDropout << " %       ";
             
             if (epochProgress < 100.0f) {

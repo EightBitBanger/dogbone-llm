@@ -63,7 +63,7 @@ void TrainModelGPU(std::string& trainingFilename, std::string& modelFilename, La
                           float& avgLoss, float lossDropout, ShaderTensor& gpu);
 
 
-/*
+
 static std::string GetDate(void) {
     std::time_t t = std::time(NULL);
     std::tm local_tm;
@@ -74,10 +74,12 @@ static std::string GetDate(void) {
 #endif
     char buf[32];
     // YYYYMMDD-HHMM (zero-padded)
-    std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M", &local_tm);
-    return std::string(buf);
+    std::strftime(buf, sizeof(buf), "%Y-%m", &local_tm);
+    std::string name = std::string(buf);
+    name.erase(name.begin(), name.begin() + 2);
+    return name;
 }
-*/
+
 
 void WindowResizePx(int width, int height);
 
