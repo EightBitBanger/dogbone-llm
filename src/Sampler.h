@@ -2,6 +2,7 @@
 #define SAMPLER_H
 
 #include <vector>
+#include <random>
 #include "Transformer/Transformer.h"
 
 struct SamplingParams {
@@ -26,6 +27,8 @@ struct TokenCandidate {
 };
 
 class TokenSampler {
+public:
+    void Seed(unsigned int s);
 public:
     
     // Returns the index of the largest value in `row[0..V-1]`.
@@ -56,6 +59,8 @@ public:
     // Generates a list of the next probable tokens.
     std::vector<TokenCandidate> GetProbableTokens(const LanguageModel& model, const std::vector<int>& context_ids, 
                                                   const SamplingParams& P, int max_candidates, float min_prob, bool renormalize);
+private:
+    std::mt19937 rng;
 };
 
 #endif

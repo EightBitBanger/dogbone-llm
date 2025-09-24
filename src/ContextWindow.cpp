@@ -3,7 +3,7 @@
 ContextWindow::ContextWindow(unsigned int maxSize) : maxSize(maxSize) {}
 
 void ContextWindow::Add(int token) {
-    if (tokens.size() > maxSize) 
+    if (tokens.size() >= maxSize) 
         tokens.erase(tokens.begin());
     tokens.emplace(tokens.end(), token);
 }

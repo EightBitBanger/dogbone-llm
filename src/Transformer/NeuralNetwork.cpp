@@ -85,10 +85,7 @@ static bool gpu_linear_forward_resident(ShaderTensor* gpu, const Tensor2D& X, in
 }
 
 // GPU attention apply: use P on GPU and multiply by V per head, no P readback.
-static bool gpu_attention_apply_no_readback(ShaderTensor* gpu,
-                                            const Tensor2D& V,
-                                            int T, int H, int DH,
-                                            Tensor2D& Y_concat) {
+static bool gpu_attention_apply_no_readback(ShaderTensor* gpu, const Tensor2D& V, int T, int H, int DH, Tensor2D& Y_concat) {
     if (!gpu) return false;
     const int D = H * DH;
     std::ptrdiff_t bytesPtotal = (std::ptrdiff_t)H * T * T * sizeof(float);
@@ -152,7 +149,12 @@ void NeuralNetwork::InitScratch(int max_T) {
     attnScratch_gs.resize((size_t)max_T);
 }
 
-NeuralNetwork::NeuralNetwork(float lr) : opt(lr) {}
+NeuralNetwork::NeuralNetwork(float lr) : 
+    opt(lr),
+    doTieWeights(false),
+    wasMatmulBuilt(false),
+    wasAttentionBuild(false),
+    wasAttentionApplyBuilt(false) {}
 
 void NeuralNetwork::LinearBackward(const Tensor2D& x, const LinearLayer& lin, const Tensor2D& dy, Tensor2D& dW, std::vector<float>& db, Tensor2D& dx) {
     // Compute Weight/Bias/Input Gradients: dW = X Transposed Times dY; dB = Row Sum Of dY; dX = dY Times W Transposed.
@@ -372,10 +374,37 @@ float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, 
         x = C.x_attn_res;
         AddInPlace(x, C.ff2_out);                   // residual add for mlp block
     }
-
-    Tensor2D logits = model.lm_head.Forward(x);
+    
+    // Weight-tying forward: logits = X [T x D] * E^T  where E = embedding matrix [V x D]
+    // Toggle here if you want to A/B
+    Tensor2D logits;
+    if (doTieWeights) {
+        const int T_ = x.R;
+        const int D_ = x.C;
+        const int V_ = model.tok.W.R; // vocab size
+        logits = Tensor2D(T_, V_);
+        for (int t = 0; t < T_; ++t) {
+            const float* xt = x.Row(t);
+            float* out = logits.Row(t);
+            for (int v = 0; v < V_; ++v) {
+                const float* Ev = &model.tok.W.data[(size_t)v * model.tok.W.C];
+                double sum = 0.0;
+                for (int d = 0; d < D_; ++d) sum += double(xt[d]) * double(Ev[d]);
+                out[v] = float(sum);
+            }
+        }
+        // add bias from lm_head (bias remains independent)
+        if (!model.lm_head.b.empty()) {
+            for (int t = 0; t < T_; ++t) {
+                float* out = logits.Row(t);
+                for (int v = 0; v < V_; ++v) out[v] += model.lm_head.b[(size_t)v];
+            }
+        }
+    } else {
+        logits = model.lm_head.Forward(x);
+    }
     float loss = CrossEntropyLoss(logits, targets, pad_id);
-
+    
     // Backward propagation
     int T = logits.R;
     int V = logits.C;
@@ -406,17 +435,59 @@ float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, 
         float inv = 1.0f / (float)count;
         for (size_t i = 0; i < dlogits.data.size(); i++) dlogits.data[i] *= inv;
     }
-
-    // Grad lm_head
+    
+    // Grad lm_head (handle tied vs untied)
     Tensor2D dW_lm, dx_last;
     std::vector<float> db_lm;
-    LinearBackward(x, model.lm_head, dlogits, dW_lm, db_lm, dx_last);
-
+    Tensor2D dTok_from_lm; // contributes to embedding grads when tied
+    
+    if (doTieWeights) {
+        // dx_last = dlogits [T x V] * E [V x D]
+        dx_last = Tensor2D(dlogits.R, model.tok.W.C);
+        for (int t = 0; t < dlogits.R; ++t) {
+            float* dxr = dx_last.Row(t);
+            const float* dlt = dlogits.Row(t);
+            for (int d = 0; d < model.tok.W.C; ++d) {
+                double sum = 0.0;
+                for (int v = 0; v < model.tok.W.R; ++v) {
+                    sum += double(dlt[v]) * double(model.tok.W.data[(size_t)v * model.tok.W.C + d]);
+                }
+                dxr[d] = float(sum);
+            }
+        }
+        // dTok_from_lm = X^T [D x T] * dlogits [T x V] -> [D x V] transpose -> store as [V x D]
+        dTok_from_lm = Tensor2D(model.tok.W.R, model.tok.W.C);
+        for (int v = 0; v < model.tok.W.R; ++v) {
+            for (int d = 0; d < model.tok.W.C; ++d) {
+                double sum = 0.0;
+                for (int t = 0; t < x.R; ++t) {
+                    sum += double(x.data[(size_t)t * x.C + d]) * double(dlogits.data[(size_t)t * dlogits.C + v]);
+                }
+                dTok_from_lm.data[(size_t)v * model.tok.W.C + d] = float(sum);
+            }
+        }
+        // bias grad: column sums of dlogits
+        db_lm.assign((size_t)dlogits.C, 0.0f);
+        for (int t = 0; t < dlogits.R; ++t) {
+            const float* row = dlogits.Row(t);
+            for (int v = 0; v < dlogits.C; ++v) db_lm[(size_t)v] += row[v];
+        }
+    } else {
+        LinearBackward(x, model.lm_head, dlogits, dW_lm, db_lm, dx_last);
+    }
+    
     // Backprop through blocks (reverse order)
     Tensor2D dx = dx_last;
     // init grads accumulators
     Tensor2D d_tokW(model.tok.W.R, model.tok.W.C); std::fill(d_tokW.data.begin(), d_tokW.data.end(), 0.0f);
     Tensor2D d_posP(model.pos.P.R, model.pos.P.C); std::fill(d_posP.data.begin(), d_posP.data.end(), 0.0f);
+    // If weights are tied, bring in dTok_from_lm
+    if (doTieWeights) {
+        if (dTok_from_lm.R > 0) {
+            for (size_t i = 0; i < d_tokW.data.size(); ++i) 
+                d_tokW.data[i] += dTok_from_lm.data[i];
+        }
+    }
 
     std::vector<Tensor2D> d_ln1_gamma(model.n_layers), d_ln2_gamma(model.n_layers);
     std::vector<Tensor2D> dummy; // not used
@@ -607,7 +678,7 @@ float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, 
         dx = dx_next;
 
     }
-
+    
     // Back to embeddings and positional enc
     // Accumulate grads for pos.P and tok.W
     // dx is gradient wrt x0 (tok + pos)
@@ -625,19 +696,24 @@ float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, 
         const float* dxrow = dx.Row(t);
         for (int c = 0; c < model.tok.W.C; c++) d_tokW.data[(size_t)id * model.tok.W.C + c] += dxrow[c];
     }
-
+    
     // Accumulate top-level grads
     if (acc) {
-        for (size_t i=0;i<acc->d_lmW.data.size();++i) acc->d_lmW.data[i] += dW_lm.data[i];
+        if (!doTieWeights) 
+            for (size_t i=0;i<acc->d_lmW.data.size();++i) 
+                acc->d_lmW.data[i] += dW_lm.data[i];
+        
         for (size_t i=0;i<acc->d_lmb.size();++i)      acc->d_lmb[i]      += db_lm[i];
         for (size_t i=0;i<acc->d_posP.data.size();++i) acc->d_posP.data[i] += d_posP.data[i];
         for (size_t i=0;i<acc->d_tokW.data.size();++i) acc->d_tokW.data[i] += d_tokW.data[i];
     }
-
+    
     if (apply_updates) {
         // Top-level Adam steps (lm_head and pos/tok)
         opt.step += 1;
-        Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
+        if (!doTieWeights) 
+            Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
+        
         Adam::StepInPlace(model.lm_head.b, db_lm, lmb_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
         Adam::StepInPlace(model.pos.P.data, d_posP.data, posP_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
         Adam::StepInPlace(model.tok.W.data, d_tokW.data, tokW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
@@ -645,6 +721,9 @@ float NeuralNetwork::Step(LanguageModel& model, const std::vector<int>& inputs, 
 
     return loss;
 }
+
+
+
 
 float NeuralNetwork::StepGPU(LanguageModel& model, const std::vector<int>& inputs, const std::vector<int>& targets,
                              int pad_id, GradientAccumulator* acc, bool apply_updates) {
@@ -1002,7 +1081,7 @@ float NeuralNetwork::StepGPU(LanguageModel& model, const std::vector<int>& input
     }
 
     if (acc) {
-        for (size_t i=0;i<acc->d_lmW.data.size();++i) acc->d_lmW.data[i] += dW_lm.data[i];
+        if (!doTieWeights) { for (size_t i=0;i<acc->d_lmW.data.size();++i) acc->d_lmW.data[i] += dW_lm.data[i]; }
         for (size_t i=0;i<acc->d_lmb.size();++i)      acc->d_lmb[i]      += db_lm[i];
         for (size_t i=0;i<acc->d_posP.data.size();++i) acc->d_posP.data[i] += d_posP.data[i];
         for (size_t i=0;i<acc->d_tokW.data.size();++i) acc->d_tokW.data[i] += d_tokW.data[i];
@@ -1010,7 +1089,7 @@ float NeuralNetwork::StepGPU(LanguageModel& model, const std::vector<int>& input
 
     if (apply_updates) {
         opt.step += 1;
-        Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
+        if (!doTieWeights) { Adam::StepInPlace(model.lm_head.W.data, dW_lm.data, lmW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step); }
         Adam::StepInPlace(model.lm_head.b,      db_lm,      lmb_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
         Adam::StepInPlace(model.pos.P.data,     d_posP.data, posP_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
         Adam::StepInPlace(model.tok.W.data,     d_tokW.data, tokW_s, opt.learning_rate, opt.beta_m, opt.beta_v, opt.epsilon, opt.step);
@@ -1033,7 +1112,7 @@ void NeuralNetwork::ApplyGradients(LanguageModel& model, const GradientAccumulat
     };
 
     // Top-level
-    apply_tensor(model.lm_head.W.data, G.d_lmW.data, lmW_s);
+    if (!doTieWeights) apply_tensor(model.lm_head.W.data, G.d_lmW.data, lmW_s);
     apply_vec(model.lm_head.b, G.d_lmb, lmb_s);
     apply_tensor(model.pos.P.data, G.d_posP.data, posP_s);
     apply_tensor(model.tok.W.data, G.d_tokW.data, tokW_s);
@@ -1183,14 +1262,14 @@ void NeuralNetwork::BuildShaders() {
     )";
 
     if (!mGpu) return;
-    if (!g_matmul_built) {
+    if (!wasMatmulBuilt) {
         if (mGpu->buildComputeFromSourceNamed("matmul", kMatMulBiasCS.c_str(), "NN_MatMulBias")) {
-            g_matmul_built = true;
+            wasMatmulBuilt = true;
         }
     }
-    if (!g_attn_built) {
+    if (!wasAttentionBuild) {
         if (mGpu->buildComputeFromSourceNamed("attn_scores", kAttnScoresCS.c_str(), "NN_AttnScores")) {
-            g_attn_built = true;
+            wasAttentionBuild = true;
         }
     }
 }

@@ -8,7 +8,7 @@
 #include "ContextWindow.h"
 
 #include "Transformer/LanguageModel.h"
-#include "WeightedReinforcementMemory.h"
+#include "WeightedMemories.h"
 
 
 struct SentenceStructure {

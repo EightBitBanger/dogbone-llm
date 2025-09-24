@@ -1,8 +1,14 @@
 #include "Sampler.h"
 
 #include <unordered_map>
+#include <random>
 
-TokenSampler Sampler;
+
+void TokenSampler::Seed(unsigned int s) {
+    if (s) rng.seed(s); else { std::random_device rd; rng.seed(rd()); }
+}
+
+
 
 int TokenSampler::ArgMax(const float* row, int V) {
     int best = 0;
@@ -35,7 +41,8 @@ void TokenSampler::SoftmaxStable(const std::vector<float>& logits, std::vector<f
 }
 
 int TokenSampler::SampleFromProbs(const std::vector<float>& probs) {
-    float r = (float)std::rand() / (float)RAND_MAX;
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float r = dist(rng);
     float c = 0.0f;
     const int V = (int)probs.size();
     for (int i = 0; i < V; i++) {
@@ -116,8 +123,6 @@ void TokenSampler::ApplyTopP(std::vector<float>& probs, float top_p) {
 int TokenSampler::GetNextToken(const LanguageModel& model,
                              const std::vector<int>& context_ids,
                              const SamplingParams& P) {
-    if (P.seed != 0u) std::srand(P.seed + (unsigned int)context_ids.size());
-    
     // Forward to get logits for the current context
     Tensor2D logits_t = model.Forward(context_ids);
     const int V = logits_t.C;
@@ -160,8 +165,6 @@ int TokenSampler::GetNextToken(const LanguageModel& model,
 // - renormalize: if true, re-normalizes probs across the returned set so they sum to 1.0.
 std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LanguageModel& model, const std::vector<int>& context_ids, const SamplingParams& P,
                                                             int max_candidates, float min_prob, bool renormalize) {
-    if (P.seed != 0u) std::srand(P.seed + (unsigned int)context_ids.size());
-    
     // Forward the context
     Tensor2D logits_t = model.Forward(context_ids);
     const int V = logits_t.C;
@@ -173,11 +176,11 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LanguageModel&
     
     
     // Repetition penalties (presence/frequency)
-    Sampler.ApplyRepetitionPenalties(logits, context_ids, P.presence_penalty, P.frequency_penalty);
+    this->ApplyRepetitionPenalties(logits, context_ids, P.presence_penalty, P.frequency_penalty);
     
     // Temperature / Greedy edge case
     if (P.temperature <= 0.0f) {
-        const int idx = Sampler.ArgMax(&logits[0], V);
+        const int idx = this->ArgMax(&logits[0], V);
     
         std::vector<TokenCandidate> out(1);
         out[0].id = idx;
@@ -192,14 +195,14 @@ std::vector<TokenCandidate> TokenSampler::GetProbableTokens(const LanguageModel&
     for (int i = 0; i < V; ++i) logits[(size_t)i] *= invT;
     
     // Top-k pruning in logit space (zero/neg-inf out disallowed)
-    if (P.top_k > 0) Sampler.ApplyTopK(logits, P.top_k);
+    if (P.top_k > 0) this->ApplyTopK(logits, P.top_k);
     
     // Softmax -> probabilities
     std::vector<float> probs;
-    Sampler.SoftmaxStable(logits, probs); // probs.size() == V
+    this->SoftmaxStable(logits, probs); // probs.size() == V
     
     // Top-p / nucleus (this typically zeros low-prob tail and renormalizes)
-    if (P.top_p < 1.0f) Sampler.ApplyTopP(probs, P.top_p);
+    if (P.top_p < 1.0f) this->ApplyTopP(probs, P.top_p);
     
     // Collect candidates above min_prob (and not masked)
     std::vector<TokenCandidate> cands;

@@ -21,6 +21,8 @@ public:
     int d_ff;
     int n_layers;
     
+    bool tie_weights;
+    
     Embedding tok;
     PositionalEncoding pos;
     std::vector<TransformerBlock> layers;

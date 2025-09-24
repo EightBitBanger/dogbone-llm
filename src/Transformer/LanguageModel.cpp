@@ -1,7 +1,14 @@
 #include "LanguageModel.h"
 
 LanguageModel::LanguageModel() :
-    vocab_size(0), d_model(0), n_heads(0), d_ff(0), n_layers(0), n_ctx(0) {}
+    
+    vocab_size(0),
+    n_ctx(0),
+    d_model(0),
+    n_heads(0),
+    d_ff(0),
+    n_layers(0),
+    tie_weights(0) {}
 
 LanguageModel::LanguageModel(int vocab, int dmodel, int heads, int ff, int layers_count, int ctx)
     : vocab_size(vocab), d_model(dmodel), n_heads(heads),
@@ -24,8 +31,31 @@ Tensor2D LanguageModel::Forward(const std::vector<int>& ids, float* scratch) con
     for (int i = 0; i < n_layers; i++) {
         x = layers[(size_t)i].Forward(x, scratch);
     }
-    Tensor2D logits = lm_head.Forward(x);
-    return logits;
+    // Output head: tied or untied
+    if (tie_weights) {
+        // logits = x [T x D] * E^T [D x V] + b
+        const int T = x.R;
+        const int D = x.C;
+        const int V = tok.W.R; // vocab size
+        Tensor2D logits(T, V);
+        for (int t = 0; t < T; ++t) {
+            const float* xt = x.Row(t);
+            float* out = logits.Row(t);
+            for (int v = 0; v < V; ++v) {
+                const float* Ev = &tok.W.data[(size_t)v * tok.W.C];
+                double sum = 0.0;
+                for (int d = 0; d < D; ++d) sum += double(xt[d]) * double(Ev[d]);
+                out[v] = (float)sum;
+            }
+            if (!lm_head.b.empty()) {
+                for (int v = 0; v < V; ++v) out[v] += lm_head.b[(size_t)v];
+            }
+        }
+        return logits;
+    } else {
+        Tensor2D logits = lm_head.Forward(x);
+        return logits;
+    }
 }
 
 bool LanguageModel::SaveToStream(std::ostream& out) const {

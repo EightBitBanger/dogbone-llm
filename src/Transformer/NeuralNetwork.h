@@ -20,10 +20,12 @@ public:
     // Adam states for top/bottom parameters
     AdamState tokW_s, posP_s, lmW_s, lmb_s;
     
-    bool g_matmul_built = false;
+    bool doTieWeights;
     
-    bool g_attn_built = false;
-    bool g_attn_apply_built = false;
+    bool wasMatmulBuilt;
+    bool wasAttentionBuild;
+    bool wasAttentionApplyBuilt;
+    
     
     // Per-layer states
     struct BlockStates {
